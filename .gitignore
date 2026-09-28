@@ -1,0 +1,8 @@
+﻿bin/
+obj/
+.vs/
+*.user
+*.suo
+
+# Configuration locale contenant des secrets
+appsettings.Development.json
