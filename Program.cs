@@ -94,17 +94,26 @@ try
 
     var api = new ApiClient(config);
 
-    // --- Thread UI (WinForms STA) : la fenêtre est créée SUR ce thread ------
+// --- Thread UI (WinForms STA) instrumenté pour diagnostic précis ------
     var fenetrePrete = new ManualResetEventSlim(false);
     var uiThread = new Thread(() =>
     {
         try
         {
+            Log("[Diagnostic UI 1/6] Démarrage du thread UI STA");
             ApplicationConfiguration.Initialize();
+            Log("[Diagnostic UI 2/6] ApplicationConfiguration.Initialize terminé");
+
             ClientWindow.Journal = Log;
+            Log("[Diagnostic UI 3/6] Début instanciation ClientWindow");
             var fenetre = new ClientWindow(devMode);
+            Log("[Diagnostic UI 4/6] Fin instanciation ClientWindow");
+
             fenetrePrete.Set();
+            Log("[Diagnostic UI 5/6] fenetrePrete.Set() signalé");
+
             Application.Run(fenetre);
+            Log("[Diagnostic UI 6/6] Application.Run terminé");
         }
         catch (Exception ex)
         {

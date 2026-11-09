@@ -1,0 +1,826 @@
+================================================================================
+   CODE SOURCE - AGENT C# (DEBUG RESEAU)
+================================================================================
+
+
+================================================================================
+📄 Program.cs
+================================================================================
+
+// ============================================================================
+//  Cyber Manager Agent — point d'entrée
+//  Options :  --server=http://IP:PORT   (mémorisée dans la config)
+//             --nom="POSTE 3"           (nom proposé à l'enregistrement)
+//  Variable : AGENT_DEV=1  → mode développement (fenêtre normale, pas de blocage clavier)
+// ============================================================================
+
+// --- Instance unique -------------------------------------------------------
+using var mutexUnique = new Mutex(true, @"Global\CyberManagerAgent", out var premiereInstance);
+if (!premiereInstance) return;
+
+// --- Journal (dans le dossier de données, jamais le token) -----------------
+var dossierDonnees = Path.GetDirectoryName(AgentConfig.ConfigPath)!;
+var logPath = Path.Combine(dossierDonnees, "agent.log");
+var logVerrou = new object();
+
+try
+{
+    if (File.Exists(logPath) && new FileInfo(logPath).Length > 1_000_000)
+        File.Move(logPath, logPath + ".old", overwrite: true);
+}
+catch { }
+
+void Log(string msg)
+{
+    var ligne = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {msg}";
+    Console.WriteLine(ligne);
+    lock (logVerrou)
+    {
+        try { File.AppendAllText(logPath, ligne + Environment.NewLine); } catch { }
+    }
+}
+
+static int Backoff(int echecs) => Math.Min(30_000, 2_000 << Math.Min(echecs, 4));   // 4s, 8s, 16s, 30s…
+
+// Lecture d'un champ du payload JSON d'une commande (jamais journalisé)
+static string? LireTexte(string? json, string champ)
+{
+    if (string.IsNullOrWhiteSpace(json)) return null;
+    try
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        return doc.RootElement.TryGetProperty(champ, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String
+            ? v.GetString() : null;
+    }
+    catch { return null; }
+}
+
+static int? LireEntier(string? json, string champ)
+{
+    if (string.IsNullOrWhiteSpace(json)) return null;
+    try
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        return doc.RootElement.TryGetProperty(champ, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.Number
+            ? v.GetInt32() : null;
+    }
+    catch { return null; }
+}
+
+const int DelaiArretSecondes = 5;
+const string ArgsExtinction = "/s /t 0";   // ajouter /f pour forcer la fermeture des applications bloquantes
+
+var devMode = Environment.GetEnvironmentVariable("AGENT_DEV") == "1";
+
+try
+{
+    Log($">>> Démarrage de l'agent Cyber Manager {ApiClient.Version} — mode {(devMode ? "DEV" : "PRODUCTION")}");
+
+    // --- Configuration + options en ligne de commande ----------------------
+    var config = AgentConfig.LoadOrCreate();
+
+    foreach (var arg in args)
+    {
+        if (arg.StartsWith("--server=", StringComparison.OrdinalIgnoreCase))
+        {
+            var url = arg[9..].Trim().TrimEnd('/');
+            if (Uri.TryCreate(url, UriKind.Absolute, out var u) && (u.Scheme is "http" or "https"))
+            {
+                config.ServerUrl = url;
+                config.Save();
+            }
+            else Log($"Option --server ignorée (URL invalide) : {url}");
+        }
+        else if (arg.StartsWith("--nom=", StringComparison.OrdinalIgnoreCase))
+        {
+            var nom = arg[6..].Trim();
+            if (nom.Length is > 0 and <= 100) { config.NomPoste = nom; config.Save(); }
+        }
+    }
+
+    Log($"Config : poste='{config.NomPoste}', serveur='{config.ServerUrl}', id='{config.IdentifiantUnique[..8]}…'");
+    Log($"Dossier de données : {dossierDonnees}");
+
+    var api = new ApiClient(config);
+
+    // --- Thread UI (WinForms STA) : la fenêtre est créée SUR ce thread ------
+    var fenetrePrete = new ManualResetEventSlim(false);
+    var uiThread = new Thread(() =>
+    {
+        try
+        {
+            ApplicationConfiguration.Initialize();
+            ClientWindow.Journal = Log;
+            var fenetre = new ClientWindow(devMode);
+            fenetrePrete.Set();
+            Application.Run(fenetre);
+        }
+        catch (Exception ex)
+        {
+            Log($">>> ERREUR UI : {ex}");
+            fenetrePrete.Set();
+        }
+    });
+    uiThread.SetApartmentState(ApartmentState.STA);
+    uiThread.Start();
+
+    if (!fenetrePrete.Wait(TimeSpan.FromSeconds(30)) || ClientWindow.Instance is null)
+    {
+        Log(">>> La fenêtre n'a pas pu être créée. Arrêt.");
+        return;
+    }
+    var fenetreUi = ClientWindow.Instance;
+
+    // Heartbeat immédiat demandé (recharge, désactivation, fin de forfait…)
+    var reveil = 0;
+    void Reveiller() => Volatile.Write(ref reveil, 1);
+    fenetreUi.ReveillerHeartbeat = Reveiller;
+
+    // Clic sur ACTIVER → appel serveur
+    fenetreUi.ActivationHandler = async () =>
+    {
+        Log("Activation demandée par le client…");
+        var r = await api.ActiverAsync();
+        Log(r.Succes
+            ? $"Activation OK{(r.Avertissement != null ? " (avertissement : " + r.Avertissement + ")" : "")}"
+            : $"Activation refusée : {r.Message}");
+        return r;
+    };
+
+    // Widget : Suspendre / Quitter → appel serveur
+    fenetreUi.SuspendreHandler = async () =>
+    {
+        Log("Suspension demandée par le client (widget)…");
+        var r = await api.SuspendreSessionAsync();
+        Log(r.Succes ? "Suspension OK" : $"Suspension refusée : {r.Message}");
+        return r;
+    };
+
+    fenetreUi.QuitterHandler = async () =>
+    {
+        Log("Fermeture de session demandée par le client (widget)…");
+        var r = await api.FermerSessionAsync();
+        Log(r.Succes ? "Fermeture OK" : $"Fermeture refusée : {r.Message}");
+        return r;
+    };
+
+    // Chat client → accueil
+    fenetreUi.MessageHandler = async texte =>
+    {
+        var r = await api.EnvoyerMessageAsync(texte);
+        Log(r.Succes
+            ? $"Message envoyé à l'accueil ({texte.Length} caractères)."
+            : $"Message non envoyé : {r.Message}");
+        return r;
+    };
+
+    // Extinction réelle de Windows (appelée après le décompte, si non annulé)
+    fenetreUi.ExtinctionHandler = () =>
+    {
+        try
+        {
+            Log($"Extinction du poste : shutdown {ArgsExtinction}");
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("shutdown", ArgsExtinction)
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false
+            });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log($"Extinction impossible : {ex.Message}");
+            return false;
+        }
+    };
+
+    // État partagé entre les boucles
+    var serveurOk = false;
+    var etatServeur = "serveur_injoignable";
+
+    void PousserInfos() =>
+        fenetreUi.MettreAJourInfos(config.NomPoste, api.Reseau.Ip, serveurOk ? etatServeur : "serveur_injoignable");
+
+    void DefinirServeur(bool ok)
+    {
+        if (ok != serveurOk)
+        {
+            serveurOk = ok;
+            Log(ok ? "Serveur joignable." : "Serveur injoignable — nouvelles tentatives avec délai croissant.");
+        }
+    }
+
+    PousserInfos();
+
+    // --- Boucle Heartbeat + handshake (5 s, backoff si panne) --------------
+    _ = Task.Run(async () =>
+    {
+        await Task.Delay(2000);
+        var echecs = 0;
+        while (true)
+        {
+            var delai = 5_000;
+            try
+            {
+                if (string.IsNullOrEmpty(config.AgentToken))
+                {
+                    var st = await api.HandshakeAsync();
+                    if (st == ApiStatut.Ok)
+                    {
+                        Log($"Handshake OK (poste '{config.NomPoste}').");
+                        echecs = 0;
+                        delai = 300;
+                    }
+                    else
+                    {
+                        echecs++;
+                        DefinirServeur(false);
+                        delai = Backoff(echecs);
+                        Log($"Handshake échoué ({st}). Nouvel essai dans {delai / 1000}s.");
+                    }
+                }
+                else
+                {
+                    var r = await api.SendHeartbeatAsync();
+                    switch (r.Statut)
+                    {
+                        case ApiStatut.Ok:
+                            echecs = 0;
+                            DefinirServeur(true);
+                            etatServeur = r.Donnees!.Etat ?? "disponible";
+
+                            if (!string.IsNullOrWhiteSpace(r.Donnees.NomPoste) && r.Donnees.NomPoste != config.NomPoste)
+                            {
+                                config.NomPoste = r.Donnees.NomPoste;
+                                config.Save();
+                            }
+                            fenetreUi.MettreAJourSession(r.Donnees.Session);
+                            fenetreUi.SyncFromServer(r.Donnees.DoitEtreVerrouille);
+                            break;
+
+                        case ApiStatut.NonAutorise:
+                            Log("Token refusé par le serveur : nouveau handshake.");
+                            config.AgentToken = "";
+                            delai = 200;
+                            break;
+
+                        default:   // injoignable ou erreur serveur : on garde l'état courant (mode dégradé)
+                            echecs++;
+                            DefinirServeur(false);
+                            delai = Backoff(echecs);
+                            break;
+                    }
+                }
+                PousserInfos();
+            }
+            catch (Exception ex) { Log($"Heartbeat : erreur inattendue : {ex.Message}"); }
+
+            // Attente par tranches : un réveil (recharge, désactivation…) déclenche un heartbeat immédiat
+            for (var attente = 0; attente < delai && Volatile.Read(ref reveil) == 0; attente += 250)
+                await Task.Delay(250);
+            Interlocked.Exchange(ref reveil, 0);
+        }
+    });
+
+    // --- Boucle Commandes (3 s, backoff si panne) ---------------------------
+    _ = Task.Run(async () =>
+    {
+        await Task.Delay(3_000);
+        var echecs = 0;
+        while (true)
+        {
+            var delai = 3_000;
+            try
+            {
+                if (!string.IsNullOrEmpty(config.AgentToken))
+                {
+                    var r = await api.GetCommandsAsync();
+                    if (r.Statut == ApiStatut.Ok)
+                    {
+                        echecs = 0;
+                        foreach (var cmd in r.Donnees!)
+                        {
+                            Log($"Commande reçue : {cmd.Type} (id={cmd.Id})");
+                            var (ok, detail) = Executer(cmd, fenetreUi);
+                            await api.ConfirmerCommandeAsync(cmd.Id, ok, detail);
+                        }
+                    }
+                    else if (r.Statut != ApiStatut.NonAutorise)
+                    {
+                        echecs++;
+                        delai = Backoff(echecs);
+                    }
+                }
+            }
+            catch (Exception ex) { Log($"Commandes : erreur inattendue : {ex.Message}"); }
+
+            await Task.Delay(delai);
+        }
+    });
+
+    // Exécution d'une commande reçue du serveur
+    (bool ok, string detail) Executer(AgentCommand cmd, ClientWindow fenetre)
+    {
+        try
+        {
+            switch (cmd.Type)
+            {
+                case "demarrer":
+                case "debloquer":
+                case "reprendre":
+                    fenetre.UnlockScreen();
+                    return (true, "Poste déverrouillé");
+
+                case "verrouiller":
+                case "suspendre":
+                case "fermer":
+                    fenetre.LockScreen();
+                    return (true, "Poste verrouillé");
+
+                case "desactiver":
+                    // L'écran affiche tout de suite « Poste désactivé » (ACTIVER devient INDISPONIBLE)
+                    etatServeur = "desactive";
+                    PousserInfos();
+                    fenetre.LockScreen();   // ferme aussi le widget s'il est ouvert
+                    Reveiller();
+                    return (true, "Poste désactivé et verrouillé");
+
+                case "arreter":
+                    fenetre.DemanderArret(DelaiArretSecondes);
+                    return (true, $"Extinction dans {DelaiArretSecondes} s");
+
+                case "recharger":
+                {
+                    var minutes = LireEntier(cmd.Payload, "minutes_ajoutees");
+                    fenetre.NotifierRecharge(minutes);
+                    Reveiller();   // le widget se recale tout de suite sur le temps du serveur
+                    return (true, "Temps ajouté");
+                }
+
+                case "message":
+                {
+                    var texte = LireTexte(cmd.Payload, "message");
+                    if (string.IsNullOrWhiteSpace(texte)) return (false, "Message vide");
+                    fenetre.RecevoirMessage(texte.Trim());
+                    return (true, "Message affiché");
+                }
+
+                default:
+                    return (false, $"Commande inconnue : {cmd.Type}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Exécution de '{cmd.Type}' échouée : {ex.Message}");
+            return (false, "Erreur d'exécution");
+        }
+    }
+
+    uiThread.Join();
+    Log(">>> Application terminée.");
+}
+catch (Exception ex)
+{
+    Log($">>> ERREUR FATALE : {ex}");
+}
+
+
+================================================================================
+📄 ApiClient.cs
+================================================================================
+
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+public enum ApiStatut { Ok, NonAutorise, Injoignable, Erreur }
+
+public record ApiReponse<T>(ApiStatut Statut, T? Donnees = default);
+
+public record ActivationResult(bool Succes, string Message, string? Avertissement = null)
+{
+    public static ActivationResult Echec(string message) => new(false, message);
+}
+
+/// <summary>Résultat d'une action de session demandée depuis le widget (suspendre / quitter).</summary>
+public record ResultatAction(bool Succes, string Message, int? Montant = null);
+
+public record InfosReseau(string Ip, string Mac);
+
+public class ApiClient
+{
+    public const string Version = "1.2.0";
+
+    private readonly HttpClient _http;
+    private readonly AgentConfig _config;
+    private InfosReseau _reseau = new("", "");
+    private DateTime _reseauLuLe = DateTime.MinValue;
+
+    public ApiClient(AgentConfig config)
+    {
+        _config = config;
+        _http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+    }
+
+    /// <summary>IP et MAC de la carte réseau réellement utilisée pour joindre le serveur.</summary>
+    public InfosReseau Reseau
+    {
+        get
+        {
+            if (DateTime.UtcNow - _reseauLuLe > TimeSpan.FromSeconds(60))
+            {
+                _reseau = LireReseau(_config.ServerUrl);
+                _reseauLuLe = DateTime.UtcNow;
+            }
+            return _reseau;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Appels API
+    // ------------------------------------------------------------------
+
+    public async Task<ApiStatut> HandshakeAsync()
+    {
+        var net = Reseau;
+        var payload = new
+        {
+            identifiant_unique = _config.IdentifiantUnique,
+            nom_poste = _config.NomPoste,
+            adresse_ip = net.Ip,
+            adresse_mac = net.Mac,
+            agent_version = Version
+        };
+
+        var (statut, corps) = await EnvoyerAsync(HttpMethod.Post, "/api/agent/handshake", payload, avecToken: false);
+        if (statut != ApiStatut.Ok) return statut;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(corps!);
+            var root = doc.RootElement;
+            var token = root.TryGetProperty("agent_token", out var t) ? t.GetString() : null;
+            var nom = root.TryGetProperty("nom_poste", out var n) ? n.GetString() : null;
+
+            if (string.IsNullOrEmpty(token)) return ApiStatut.Erreur;
+
+            var modifie = token != _config.AgentToken;
+            _config.AgentToken = token;
+            if (!string.IsNullOrWhiteSpace(nom) && nom != _config.NomPoste)
+            {
+                _config.NomPoste = nom;   // le serveur fait foi pour le nom
+                modifie = true;
+            }
+            if (modifie) _config.Save();
+            return ApiStatut.Ok;
+        }
+        catch { return ApiStatut.Erreur; }
+    }
+
+    public async Task<ApiReponse<HeartbeatResponse>> SendHeartbeatAsync()
+    {
+        var (statut, corps) = await EnvoyerAsync(HttpMethod.Post, "/api/agent/heartbeat",
+            new { adresse_ip = Reseau.Ip });
+        if (statut != ApiStatut.Ok) return new(statut);
+
+        try
+        {
+            var hb = JsonSerializer.Deserialize<HeartbeatResponse>(corps!);
+            return hb is { Ok: true } ? new(ApiStatut.Ok, hb) : new(ApiStatut.Erreur);
+        }
+        catch { return new(ApiStatut.Erreur); }
+    }
+
+    public async Task<ApiReponse<List<AgentCommand>>> GetCommandsAsync()
+    {
+        var (statut, corps) = await EnvoyerAsync(HttpMethod.Get, "/api/agent/commandes");
+        if (statut != ApiStatut.Ok) return new(statut);
+
+        try
+        {
+            using var doc = JsonDocument.Parse(corps!);
+            var commandes = new List<AgentCommand>();
+            if (doc.RootElement.TryGetProperty("commandes", out var arr))
+            {
+                foreach (var item in arr.EnumerateArray())
+                {
+                    commandes.Add(new AgentCommand
+                    {
+                        Id = item.GetProperty("id").GetInt32(),
+                        Type = item.GetProperty("type").GetString() ?? "",
+                        Payload = item.TryGetProperty("payload", out var p) && p.ValueKind != JsonValueKind.Null
+                            ? p.GetRawText() : null
+                    });
+                }
+            }
+            return new(ApiStatut.Ok, commandes);
+        }
+        catch { return new(ApiStatut.Erreur); }
+    }
+
+    public async Task ConfirmerCommandeAsync(int id, bool succes, string message = "")
+    {
+        await EnvoyerAsync(HttpMethod.Post, $"/api/agent/commandes/{id}/confirmer", new { succes, message });
+    }
+
+    /// <summary>Demande d'activation (bouton ACTIVER). Le serveur crée la session et connecte le poste.</summary>
+    public async Task<ActivationResult> ActiverAsync()
+    {
+        var (statut, corps) = await EnvoyerAsync(HttpMethod.Post, "/api/agent/activer", new { });
+
+        switch (statut)
+        {
+            case ApiStatut.Injoignable:
+                return ActivationResult.Echec("Serveur injoignable. Réessayez dans quelques instants.");
+
+            case ApiStatut.NonAutorise:
+                _config.AgentToken = "";   // forcera un nouveau handshake
+                return ActivationResult.Echec("Poste en cours de reconnexion au serveur. Réessayez dans 5 secondes.");
+
+            case ApiStatut.Erreur:
+                return ActivationResult.Echec(LireChamp(corps, "message") ?? "Activation refusée par le serveur.");
+
+            default:
+                return new ActivationResult(true,
+                    LireChamp(corps, "message") ?? "Poste activé.",
+                    LireChamp(corps, "avertissement"));
+        }
+    }
+
+        /// <summary>Le client suspend sa session depuis le widget : chrono figé côté serveur.</summary>
+    public Task<ResultatAction> SuspendreSessionAsync() =>
+        ActionSessionAsync("/api/agent/session/suspendre", "Session suspendue.");
+
+    /// <summary>Le client quitte depuis le widget : session clôturée, montant calculé, réseau coupé.</summary>
+    public Task<ResultatAction> FermerSessionAsync() =>
+        ActionSessionAsync("/api/agent/session/fermer", "Session terminée.");
+
+
+    /// <summary>Le client écrit à l'accueil (chat client → admin).</summary>
+    public Task<ResultatAction> EnvoyerMessageAsync(string texte) =>
+        ActionSessionAsync("/api/agent/message", "Message envoyé.", new { texte });
+
+    private async Task<ResultatAction> ActionSessionAsync(string chemin, string messageParDefaut, object? payload = null)
+    {
+        var (statut, corps) = await EnvoyerAsync(HttpMethod.Post, chemin, payload ?? new { });
+
+        switch (statut)
+        {
+            case ApiStatut.Injoignable:
+                return new ResultatAction(false, "Serveur injoignable. Réessayez dans quelques instants.");
+
+            case ApiStatut.NonAutorise:
+                _config.AgentToken = "";   // forcera un nouveau handshake
+                return new ResultatAction(false, "Poste en cours de reconnexion au serveur. Réessayez dans 5 secondes.");
+
+            case ApiStatut.Erreur:
+                return new ResultatAction(false, LireChamp(corps, "message") ?? "Action refusée par le serveur.");
+
+            default:
+                return new ResultatAction(true, LireChamp(corps, "message") ?? messageParDefaut, LireEntier(corps, "montant"));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
+    private async Task<(ApiStatut statut, string? corps)> EnvoyerAsync(
+        HttpMethod methode, string chemin, object? payload = null, bool avecToken = true)
+    {
+        try
+        {
+            using var req = new HttpRequestMessage(methode, _config.ServerUrl.TrimEnd('/') + chemin);
+            req.Headers.Accept.ParseAdd("application/json");
+            if (avecToken && !string.IsNullOrEmpty(_config.AgentToken))
+                req.Headers.Add("X-Agent-Token", _config.AgentToken);
+
+            if (methode != HttpMethod.Get)
+                req.Content = new StringContent(
+                    JsonSerializer.Serialize(payload ?? new { }), Encoding.UTF8, "application/json");
+
+            using var res = await _http.SendAsync(req);
+            var corps = await res.Content.ReadAsStringAsync();
+
+            if (res.StatusCode == HttpStatusCode.Unauthorized) return (ApiStatut.NonAutorise, corps);
+            return (res.IsSuccessStatusCode ? ApiStatut.Ok : ApiStatut.Erreur, corps);
+        }
+        catch
+        {
+            return (ApiStatut.Injoignable, null);
+        }
+    }
+
+    private static string? LireChamp(string? json, string champ)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.TryGetProperty(champ, out var v) && v.ValueKind == JsonValueKind.String
+                ? v.GetString() : null;
+        }
+        catch { return null; }
+    }
+
+        private static int? LireEntier(string? json, string champ)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.TryGetProperty(champ, out var v) && v.ValueKind == JsonValueKind.Number
+                ? v.GetInt32() : null;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Détermine l'IP locale utilisée pour joindre le serveur, puis la MAC de cette même carte
+    /// (et non d'une carte virtuelle/VPN au hasard).
+    /// </summary>
+    private static InfosReseau LireReseau(string serverUrl)
+    {
+        string ip = "", mac = "";
+        try
+        {
+            if (Uri.TryCreate(serverUrl, UriKind.Absolute, out var uri))
+            {
+                using var s = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, 0);
+                s.Connect(uri.Host, uri.Port);   // UDP : aucun paquet envoyé
+                var local = (s.LocalEndPoint as IPEndPoint)?.Address;
+                if (local != null)
+                {
+                    ip = local.ToString();
+                    foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+                    {
+                        if (nic.OperationalStatus != OperationalStatus.Up) continue;
+                        if (!nic.GetIPProperties().UnicastAddresses.Any(a => a.Address.Equals(local))) continue;
+                        mac = FormaterMac(nic.GetPhysicalAddress().ToString());
+                        if (mac != "") break;
+                    }
+                }
+            }
+        }
+        catch { }
+
+        // Repli : première carte active non loopback
+        if (mac == "")
+        {
+            try
+            {
+                foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (nic.OperationalStatus != OperationalStatus.Up) continue;
+                    if (nic.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+                    mac = FormaterMac(nic.GetPhysicalAddress().ToString());
+                    if (mac != "") break;
+                }
+            }
+            catch { }
+        }
+
+        return new InfosReseau(ip, mac);
+    }
+
+    private static string FormaterMac(string brut) =>
+        brut.Length == 12
+            ? string.Join(":", Enumerable.Range(0, 6).Select(i => brut.Substring(i * 2, 2))).ToUpperInvariant()
+            : "";
+}
+
+public class HeartbeatResponse
+{
+    [JsonPropertyName("ok")] public bool Ok { get; set; }
+    [JsonPropertyName("nom_poste")] public string? NomPoste { get; set; }
+    [JsonPropertyName("etat")] public string? Etat { get; set; }
+    [JsonPropertyName("doit_etre_verrouille")] public bool DoitEtreVerrouille { get; set; }
+    [JsonPropertyName("session")] public SessionInfo? Session { get; set; }
+}
+
+public class SessionInfo
+{
+    [JsonPropertyName("id")] public int Id { get; set; }
+    [JsonPropertyName("mode")] public string? Mode { get; set; }
+    [JsonPropertyName("date_heure_debut")] public string? DateHeureDebut { get; set; }
+    [JsonPropertyName("date_heure_fin")] public string? DateHeureFin { get; set; }
+    [JsonPropertyName("duree_prevue")] public int DureePrevue { get; set; }
+    [JsonPropertyName("montant_actuel")] public int MontantActuel { get; set; }
+    [JsonPropertyName("etat")] public string? Etat { get; set; }
+    [JsonPropertyName("ecoule_s")] public int EcouleS { get; set; }
+    [JsonPropertyName("restant_s")] public int? RestantS { get; set; }
+}
+
+public class AgentCommand
+{
+    public int Id { get; set; }
+    public string Type { get; set; } = "";
+    public string? Payload { get; set; }
+}
+
+
+================================================================================
+📄 AgentConfig.cs
+================================================================================
+
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+public class AgentConfig
+{
+    [JsonPropertyName("server_url")]
+    public string ServerUrl { get; set; } = "http://127.0.0.1:8000";
+
+    [JsonPropertyName("nom_poste")]
+    public string NomPoste { get; set; } = Environment.MachineName;
+
+    [JsonPropertyName("identifiant_unique")]
+    public string IdentifiantUnique { get; set; } = "";
+
+    [JsonPropertyName("agent_token")]
+    public string AgentToken { get; set; } = "";
+
+    [JsonIgnore]
+    public static string ConfigPath
+    {
+        get
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "CyberManagerAgent");
+            Directory.CreateDirectory(dir);
+            return Path.Combine(dir, "agent-config.json");
+        }
+    }
+
+    public static AgentConfig LoadOrCreate()
+    {
+        if (File.Exists(ConfigPath))
+        {
+            try
+            {
+                var json = File.ReadAllText(ConfigPath);
+                var config = JsonSerializer.Deserialize<AgentConfig>(json);
+                if (config != null)
+                {
+                    if (string.IsNullOrEmpty(config.IdentifiantUnique))
+                    {
+                        config.IdentifiantUnique = Guid.NewGuid().ToString();
+                        config.Save();
+                    }
+                    return config;
+                }
+            }
+            catch { }
+        }
+
+        var nouveau = new AgentConfig
+        {
+            IdentifiantUnique = Guid.NewGuid().ToString()
+        };
+        nouveau.Save();
+        return nouveau;
+    }
+
+    public void Save()
+    {
+        var options = new JsonSerializerOptions { WriteIndented = true };
+        File.WriteAllText(ConfigPath, JsonSerializer.Serialize(this, options));
+    }
+}
+
+
+================================================================================
+📄 appsettings.json
+================================================================================
+
+﻿{
+    "Logging":  {
+                    "LogLevel":  {
+                                     "Microsoft.AspNetCore":  "Warning",
+                                     "Default":  "Information"
+                                 }
+                },
+    "AllowedHosts":  "*"
+}
+
+
+
+================================================================================
+📄 appsettings.Development.json
+================================================================================
+
+﻿{
+    "Logging":  {
+                    "LogLevel":  {
+                                     "Microsoft.AspNetCore":  "Warning",
+                                     "Default":  "Information"
+                                 }
+                },
+    "AgentToken":  "CyberManagerAgent2026_Secret"
+}
+
+

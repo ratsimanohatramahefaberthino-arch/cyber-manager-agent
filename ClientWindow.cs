@@ -75,6 +75,8 @@ public class ClientWindow : Form
         Instance = this;
         _devMode = devMode;
 
+        Journal("[Diagnostic Window] Début constructeur ClientWindow");
+
         Text = "Cyber Manager Agent";
         BackColor = Color.FromArgb(11, 18, 38);
 
@@ -100,6 +102,8 @@ public class ClientWindow : Form
             Dock = DockStyle.Fill,
             DefaultBackgroundColor = Color.FromArgb(11, 18, 38)
         };
+        Journal("[Diagnostic Window] new WebView2() terminé");
+        
         _attente = new Label
         {
             Dock = DockStyle.Fill,
@@ -110,6 +114,7 @@ public class ClientWindow : Form
             Text = "Cyber Manager — démarrage…"
         };
         Controls.Add(_web);
+        Journal("[Diagnostic Window] Controls.Add(_web) terminé");
         Controls.Add(_attente);
         _attente.BringToFront();
 
@@ -572,8 +577,14 @@ public class ClientWindow : Form
             try
             {
                 var dossier = Path.Combine(Path.GetDirectoryName(AgentConfig.ConfigPath)!, "WebView2");
+                Journal($"[Diagnostic WebView2] Dossier UDF : {dossier}");
+                Journal("[Diagnostic WebView2] Appel CoreWebView2Environment.CreateAsync...");
+                
                 var env = await CoreWebView2Environment.CreateAsync(null, dossier);
+                
+                Journal("[Diagnostic WebView2] CreateAsync terminé. Appel EnsureCoreWebView2Async...");
                 await _web.EnsureCoreWebView2Async(env);
+                Journal("[Diagnostic WebView2] EnsureCoreWebView2Async terminé.");
 
                 var s = _web.CoreWebView2.Settings;
                 s.AreDefaultContextMenusEnabled = false;
