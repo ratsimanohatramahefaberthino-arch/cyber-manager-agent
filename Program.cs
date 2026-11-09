@@ -124,12 +124,14 @@ try
     uiThread.SetApartmentState(ApartmentState.STA);
     uiThread.Start();
 
-    if (!fenetrePrete.Wait(TimeSpan.FromSeconds(30)) || ClientWindow.Instance is null)
+    Log("Attente de la création de la fenêtre (peut prendre du temps au premier lancement)...");
+    if (!fenetrePrete.Wait(TimeSpan.FromMinutes(5)) || ClientWindow.Instance is null)
     {
-        Log(">>> La fenêtre n'a pas pu être créée. Arrêt.");
+        Log(">>> La fenêtre n'a pas pu être créée dans le délai imparti. Arrêt.");
         return;
     }
     var fenetreUi = ClientWindow.Instance;
+    Log("Fenêtre prête. Démarrage de la communication avec le serveur.");
 
     // Heartbeat immédiat demandé (recharge, désactivation, fin de forfait…)
     var reveil = 0;
