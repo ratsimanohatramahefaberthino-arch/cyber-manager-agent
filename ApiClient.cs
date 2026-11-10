@@ -295,6 +295,9 @@ public class ApiClient
         return new InfosReseau(ip, mac);
     }
 
+    public Task<ResultatAction> ReprendreSessionAsync() =>
+        ActionSessionAsync("/api/agent/session/reprendre", "Session reprise.");
+
     private static string FormaterMac(string brut) =>
         brut.Length == 12
             ? string.Join(":", Enumerable.Range(0, 6).Select(i => brut.Substring(i * 2, 2))).ToUpperInvariant()

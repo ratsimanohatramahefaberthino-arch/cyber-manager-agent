@@ -138,6 +138,10 @@ try
     void Reveiller() => Volatile.Write(ref reveil, 1);
     fenetreUi.ReveillerHeartbeat = Reveiller;
 
+    // État partagé entre les boucles
+    var serveurOk = false;
+    var etatServeur = "serveur_injoignable";
+
     // Clic sur ACTIVER → appel serveur
     fenetreUi.ActivationHandler = async () =>
     {
@@ -152,15 +156,23 @@ try
     // Widget : Suspendre / Quitter → appel serveur
     fenetreUi.SuspendreHandler = async () =>
     {
-        Log("Suspension demandée par le client (widget)…");
-        var r = await api.SuspendreSessionAsync();
-        Log(r.Succes ? "Suspension OK" : $"Suspension refusée : {r.Message}");
-        return r;
+        Log("Suspension/Reprise demandée…");
+        // On regarde si le poste est actuellement suspendu pour savoir s'il faut reprendre
+        // (Le client n'a que le bouton Reprendre quand il est suspendu)
+        if (etatServeur == "suspendu") {
+            var r = await api.ReprendreSessionAsync(); // À ajouter dans ApiClient.cs
+            Log(r.Succes ? "Reprise OK" : $"Reprise refusée : {r.Message}");
+            return r;
+        } else {
+            var r = await api.SuspendreSessionAsync();
+            Log(r.Succes ? "Suspension OK" : $"Suspension refusée : {r.Message}");
+            return r;
+        }
     };
 
     fenetreUi.QuitterHandler = async () =>
     {
-        Log("Fermeture de session demandée par le client (widget)…");
+        Log("Fermeture de session demandée…");
         var r = await api.FermerSessionAsync();
         Log(r.Succes ? "Fermeture OK" : $"Fermeture refusée : {r.Message}");
         return r;
@@ -196,9 +208,7 @@ try
         }
     };
 
-    // État partagé entre les boucles
-    var serveurOk = false;
-    var etatServeur = "serveur_injoignable";
+
 
     void PousserInfos() =>
         fenetreUi.MettreAJourInfos(config.NomPoste, api.Reseau.Ip, serveurOk ? etatServeur : "serveur_injoignable");

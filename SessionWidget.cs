@@ -1,24 +1,14 @@
 using System.Globalization;
 using System.Runtime.InteropServices;
 
-/// <summary>
-/// Petit widget flottant affiché pendant une session : temps, montant, heure de début.
-/// Le serveur reste la référence : le widget reçoit un instantané à chaque heartbeat
-/// et ne fait qu'avancer le chrono localement entre deux heartbeats.
-/// Étape 5 : alerte « 5 minutes restantes », détection locale de fin de forfait, bouton messages.
-/// Doit être créé et manipulé sur le thread UI (ClientWindow s'en charge).
-/// </summary>
 public class SessionWidget : Form
 {
     public Func<Task<ResultatAction>>? SuspendreHandler { get; set; }
     public Func<Task<ResultatAction>>? QuitterHandler { get; set; }
+    public Func<string, Task<ResultatAction>>? MessageHandler { get; set; }
 
-    /// <summary>Déclenché une fois quand il reste 5 minutes ou moins (forfait).</summary>
     public event Action? CinqMinutes;
-    /// <summary>Déclenché une fois quand le temps du forfait est écoulé localement.</summary>
     public event Action? ForfaitTermine;
-    /// <summary>Clic sur le bouton ✉.</summary>
-    public event Action? MessagesDemandes;
 
     private static readonly Color Fond = Color.FromArgb(11, 18, 38);
     private static readonly Color Texte = Color.FromArgb(226, 232, 240);
@@ -29,9 +19,11 @@ public class SessionWidget : Form
     private static readonly Color Rouge = Color.FromArgb(220, 38, 38);
     private static readonly Color Ardoise = Color.FromArgb(51, 65, 85);
 
-    private readonly float _k;                       // facteur d'échelle DPI
+    private readonly float _k;
     private readonly Label _lblCaption, _lblTemps, _lblMontant, _lblDebut;
-    private readonly Button _btnCacher, _btnSuspendre, _btnQuitter, _btnMsg;
+    private readonly Button _btnCacher, _btnSuspendre, _btnQuitter, _btnEnvoyer;
+    private readonly RichTextBox _chatBox;
+    private readonly TextBox _chatSaisie;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly NotifyIcon _tray;
 
@@ -43,9 +35,9 @@ public class SessionWidget : Form
     private string _debut = "—";
     private long _recuTick = Environment.TickCount64;
 
-    private bool _masque, _occupe, _positionne, _fermetureAutorisee;
+    private bool _modeReduit, _occupe, _positionne, _fermetureAutorisee;
     private bool _alerte5, _finSignalee;
-    private int _ticks, _nonLus;
+    private int _ticks;
 
     public SessionWidget()
     {
@@ -57,61 +49,67 @@ public class SessionWidget : Form
         ShowInTaskbar = false;
         TopMost = true;
         BackColor = Fond;
-        ClientSize = new Size(S(200), S(180));
+        ClientSize = new Size(S(340), S(360));
         DoubleBuffered = true;
         Deplacable(this);
 
-        Etiquette("CYBER MANAGER", 8f, FontStyle.Bold, VioletClair, 0, 4, 200, 18);
-        _lblCaption = Etiquette("TEMPS ÉCOULÉ", 7.5f, FontStyle.Bold, Discret, 0, 24, 200, 16);
-        _lblTemps = Etiquette("00:00:00", 20f, FontStyle.Bold, Ambre, 0, 38, 200, 36, "Consolas");
-        _lblMontant = Etiquette("", 9f, FontStyle.Bold, Texte, 0, 76, 200, 20);
-        _lblDebut = Etiquette("", 8.5f, FontStyle.Regular, Discret, 0, 96, 200, 18);
+        // Section 1: Les chronos et montants (Grands et lisibles)
+        Etiquette("CYBER MANAGER", 10f, FontStyle.Bold, VioletClair, 0, 8, 340, 20);
+        _lblCaption = Etiquette("TEMPS ÉCOULÉ", 10f, FontStyle.Bold, Discret, 0, 32, 340, 18);
+        _lblTemps = Etiquette("00:00:00", 22f, FontStyle.Bold, Ambre, 0, 52, 340, 40, "Consolas");
+        _lblMontant = Etiquette("", 14f, FontStyle.Bold, Texte, 0, 96, 340, 24);
+        _lblDebut = Etiquette("", 10f, FontStyle.Regular, Discret, 0, 124, 340, 18);
 
-        _btnCacher = Bouton("Cacher", Ardoise, 8, (_, _) => Cacher());
-        _btnSuspendre = Bouton("Suspendre", Violet, 71, async (_, _) => await ExecuterAsync(
-            SuspendreHandler,
-            "Suspendre votre session ?\n\nLe chronomètre sera mis en pause et l'écran sera verrouillé.\nAdressez-vous à l'accueil pour reprendre.",
-            "Suspendre la session"));
-        _btnQuitter = Bouton("Quitter", Rouge, 134, async (_, _) => await ExecuterAsync(
-            QuitterHandler,
-            "Terminer votre session ?\n\nVotre consommation sera arrêtée et l'écran sera verrouillé.",
-            "Quitter la session"));
-
-        // Bouton messages (coin haut-droit) ; au premier plan car les étiquettes le recouvrent
-        _btnMsg = new Button
+        // Section 2: Chat
+        _chatBox = new RichTextBox
         {
-            Text = "✉",
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Ardoise,
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI Symbol", 8f, FontStyle.Bold),
-            Bounds = new Rectangle(S(150), S(4), S(44), S(18)),
-            TabStop = false,
-            Cursor = Cursors.Hand,
-            UseVisualStyleBackColor = false
+            ReadOnly = true, BorderStyle = BorderStyle.None, DetectUrls = false, TabStop = false,
+            ScrollBars = RichTextBoxScrollBars.Vertical, Font = new Font("Segoe UI", 9f),
+            Bounds = new Rectangle(S(8), S(148), S(324), S(120))
         };
-        _btnMsg.FlatAppearance.BorderSize = 0;
-        _btnMsg.Click += (_, _) => MessagesDemandes?.Invoke();
-        Controls.Add(_btnMsg);
-        _btnMsg.BringToFront();
+        _chatBox.BackColor = Color.FromArgb(19, 28, 58);
+        _chatBox.ForeColor = Texte;
+        Deplacable(_chatBox);
+        Controls.Add(_chatBox);
 
-        // Icône de la zone de notification : visible uniquement quand le widget est caché
+        _chatSaisie = new TextBox
+        {
+            BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(19, 28, 58), ForeColor = Color.White,
+            Font = new Font("Segoe UI", 10f), PlaceholderText = "Écrire...",
+            Bounds = new Rectangle(S(8), S(272), S(260), S(28))
+        };
+        _chatSaisie.KeyDown += async (_, e) => {
+            if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; await EnvoyerChatAsync(); }
+        };
+        Controls.Add(_chatSaisie);
+
+        _btnEnvoyer = new Button
+        {
+            Text = "➤", FlatStyle = FlatStyle.Flat, BackColor = Violet, ForeColor = Color.White,
+            Font = new Font("Segoe UI", 10f, FontStyle.Bold), Bounds = new Rectangle(S(270), S(272), S(62), S(28)),
+            TabStop = false, Cursor = Cursors.Hand, UseVisualStyleBackColor = false
+        };
+        _btnEnvoyer.FlatAppearance.BorderSize = 0;
+        _btnEnvoyer.Click += async (_, _) => await EnvoyerChatAsync();
+        Controls.Add(_btnEnvoyer);
+
+        // Section 3: Boutons d'action (toujours en bas)
+        _btnCacher = Bouton("Réduire", Ardoise, 8, (_, _) => BasculerReduction());
+        _btnSuspendre = Bouton("Suspendre", Violet, 116, async (_, _) => await ExecuterAsync(SuspendreHandler, "Suspendre votre session ?", "Suspendre"));
+        _btnQuitter = Bouton("Quitter", Rouge, 224, async (_, _) => await ExecuterAsync(QuitterHandler, "Terminer votre session ?", "Quitter"));
+
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Afficher le compteur", null, (_, _) => Reafficher());
+        menu.Items.Add("Afficher le compteur", null, (_, _) => BasculerReduction(false));
         _tray = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
-            Text = "Cyber Manager — session en cours",
-            ContextMenuStrip = menu,
-            Visible = false
+            Icon = SystemIcons.Application, Text = "Cyber Manager", ContextMenuStrip = menu, Visible = false
         };
-        _tray.DoubleClick += (_, _) => Reafficher();
+        _tray.DoubleClick += (_, _) => BasculerReduction(false);
 
         _timer = new System.Windows.Forms.Timer { Interval = 1000 };
         _timer.Tick += (_, _) =>
         {
             Rafraichir();
-            // Garde le widget au-dessus des autres fenêtres (sans lui donner le focus)
             if (++_ticks % 5 == 0 && Visible && IsHandleCreated)
                 SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);
         };
@@ -120,22 +118,6 @@ public class SessionWidget : Form
         Rafraichir();
     }
 
-    // ------------------------------------------------------------------
-    // API publique (thread UI)
-    // ------------------------------------------------------------------
-
-    /// <summary>Nombre de messages non lus (affiché sur le bouton ✉).</summary>
-    public int NonLus
-    {
-        set
-        {
-            _nonLus = Math.Max(0, value);
-            _btnMsg.Text = _nonLus > 0 ? $"✉ {_nonLus}" : "✉";
-            _btnMsg.BackColor = _nonLus > 0 ? Ambre : Ardoise;
-        }
-    }
-
-    /// <summary>Reçoit l'instantané de session du serveur (heartbeat).</summary>
     public void MettreAJour(SessionInfo s)
     {
         var nouvelle = s.Id != _sessionId;
@@ -149,69 +131,40 @@ public class SessionWidget : Form
 
         if (nouvelle)
         {
-            _masque = false;     // nouvelle session : on réaffiche toujours
-            _alerte5 = false;
-            _finSignalee = false;
+            _modeReduit = false; _alerte5 = false; _finSignalee = false;
+            _chatBox.Clear();
+            // Recaler le widget en bas
+            _positionne = false;
+            Afficher();
         }
         Rafraichir();
-        if (!_masque) Afficher();
+        if (!_modeReduit) Afficher();
     }
 
-    /// <summary>Ferme définitivement le widget (verrouillage, fin de session…).</summary>
-    public void Fermer()
+    public void AjouterMessageChat(MessageChat m)
     {
-        _fermetureAutorisee = true;
-        if (!IsDisposed) Close();
+        _chatBox.Select(_chatBox.TextLength, 0);
+        _chatBox.SelectionFont = new Font("Segoe UI", 8f, FontStyle.Bold);
+        _chatBox.SelectionColor = Discret;
+        _chatBox.SelectedText = (m.DeMoi ? "Moi" : "Accueil") + " · " + m.Heure + "\n";
+        
+        _chatBox.SelectionFont = new Font("Segoe UI", 9f);
+        _chatBox.SelectionColor = m.DeMoi ? VioletClair : Texte;
+        _chatBox.SelectedText = m.Texte + "\n\n";
+        _chatBox.ScrollToCaret();
     }
 
     public static string FormaterAr(int montant) =>
         montant.ToString("N0", CultureInfo.GetCultureInfo("fr-FR"))
             .Replace('\u202f', ' ').Replace('\u00a0', ' ') + " Ar";
 
-    // ------------------------------------------------------------------
-    // Comportement de la fenêtre
-    // ------------------------------------------------------------------
+    public void Fermer() { _fermetureAutorisee = true; Close(); }
 
     protected override bool ShowWithoutActivation => true;
-
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            var cp = base.CreateParams;
-            cp.ExStyle |= 0x80;   // WS_EX_TOOLWINDOW : absent d'Alt+Tab
-            return cp;
-        }
-    }
-
-    protected override void OnFormClosing(FormClosingEventArgs e)
-    {
-        // Alt+F4 ne ferme pas le widget : seule la fermeture pilotée par l'agent est acceptée
-        if (!_fermetureAutorisee && e.CloseReason == CloseReason.UserClosing)
-        {
-            e.Cancel = true;
-            return;
-        }
-        base.OnFormClosing(e);
-    }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        base.OnPaint(e);
-        using var pen = new Pen(Color.FromArgb(110, 139, 92, 246));
-        e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
-    }
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing)
-        {
-            _timer.Dispose();
-            _tray.Visible = false;
-            _tray.Dispose();
-        }
-        base.Dispose(disposing);
-    }
+    protected override CreateParams CreateParams { get { var cp = base.CreateParams; cp.ExStyle |= 0x80; return cp; } }
+    protected override void OnFormClosing(FormClosingEventArgs e) { if (!_fermetureAutorisee && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; return; } base.OnFormClosing(e); }
+    protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); using var pen = new Pen(Color.FromArgb(110, 139, 92, 246)); e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1); }
+    protected override void Dispose(bool disposing) { if (disposing) { _timer.Dispose(); _tray.Visible = false; _tray.Dispose(); } base.Dispose(disposing); }
 
     private void Afficher()
     {
@@ -219,7 +172,8 @@ public class SessionWidget : Form
         if (!_positionne)
         {
             var zone = Screen.PrimaryScreen?.WorkingArea ?? SystemInformation.WorkingArea;
-            Location = new Point(zone.Right - Width - S(12), zone.Bottom - Height - S(12));
+            // Toujours collé en bas à droite
+            Location = new Point(zone.Right - Width - S(12), zone.Bottom - Height);
             _positionne = true;
         }
         _tray.Visible = false;
@@ -227,22 +181,50 @@ public class SessionWidget : Form
         TopMost = true;
     }
 
-    private void Cacher()
+    private void BasculerReduction(bool? forceReduit = null)
     {
-        _masque = true;
-        _tray.Visible = true;
-        Hide();
-    }
+        _modeReduit = forceReduit ?? !_modeReduit;
+        
+        _lblCaption.Visible = !_modeReduit;
+        _lblTemps.Visible = !_modeReduit;
+        _lblDebut.Visible = !_modeReduit;
+        _chatBox.Visible = !_modeReduit;
+        _chatSaisie.Visible = !_modeReduit;
+        _btnEnvoyer.Visible = !_modeReduit;
+        
+        _lblMontant.Visible = true;
+        _btnCacher.Text = _modeReduit ? "Afficher" : "Réduire";
 
-    private void Reafficher()
-    {
-        _masque = false;
-        Afficher();
-    }
+        var zone = Screen.PrimaryScreen?.WorkingArea ?? SystemInformation.WorkingArea;
 
-    // ------------------------------------------------------------------
-    // Affichage + alertes
-    // ------------------------------------------------------------------
+        if (_modeReduit)
+        {
+            ClientSize = new Size(S(340), S(150));
+            _lblMontant.Bounds = new Rectangle(S(0), S(32), S(340), S(30));
+            _lblMontant.TextAlign = ContentAlignment.MiddleCenter;
+            _lblMontant.Font = new Font("Segoe UI", 14f, FontStyle.Bold);
+            
+            _btnCacher.Bounds = new Rectangle(S(8), S(90), S(100), S(45));
+            _btnSuspendre.Bounds = new Rectangle(S(116), S(90), S(100), S(45));
+            _btnQuitter.Bounds = new Rectangle(S(224), S(90), S(100), S(45));
+        }
+        else
+        {
+            ClientSize = new Size(S(340), S(360));
+            _lblMontant.Bounds = new Rectangle(S(0), S(96), S(340), S(24));
+            _lblMontant.TextAlign = ContentAlignment.MiddleCenter;
+            _lblMontant.Font = new Font("Segoe UI", 14f, FontStyle.Bold);
+
+            _btnCacher.Bounds = new Rectangle(S(8), S(308), S(100), S(45));
+            _btnSuspendre.Bounds = new Rectangle(S(116), S(308), S(100), S(45));
+            _btnQuitter.Bounds = new Rectangle(S(224), S(308), S(100), S(45));
+        }
+
+        // Recaler en bas
+        Location = new Point(zone.Right - Width - S(12), zone.Bottom - Height);
+
+        if (!Visible) Afficher();
+    }
 
     private void Rafraichir()
     {
@@ -254,131 +236,70 @@ public class SessionWidget : Form
         _lblTemps.Text = Duree(secondes);
         _lblTemps.ForeColor = forfait && secondes <= 300 ? Color.FromArgb(248, 113, 113) : Ambre;
 
-        _lblMontant.Text = _mode == "libre" ? "Sans facturation" : "À payer : " + FormaterAr(_montant);
+        if (_mode == "libre") _lblMontant.Text = "Sans facturation";
+        else if (_mode == "forfait") _lblMontant.Text = $"Forfait : {FormaterAr(_montant)}";
+        else {
+            // Postpayé temps réel
+            var min = (int)(secondes / 60);
+            var tarif = 20; // Fallback si le serveur n'envoie pas le tarif, sinon on prend le montant renvoyé par le serveur
+            var montantCalcule = Math.Max(300, min * tarif); 
+            
+            // Si le serveur a envoyé un montant plus grand, on l'utilise
+            var affichage = Math.Max(_montant, montantCalcule);
+            _lblMontant.Text = "À payer : " + FormaterAr(affichage);
+        }
+
         _lblDebut.Text = "Début : " + _debut;
 
         if (!forfait) return;
 
-        // Alerte « 5 minutes restantes » (une fois ; réarmée si le forfait est rechargé)
         if (secondes > 300) _alerte5 = false;
-        else if (secondes > 0 && !_alerte5)
-        {
-            _alerte5 = true;
-            CinqMinutes?.Invoke();
-        }
+        else if (secondes > 0 && !_alerte5) { _alerte5 = true; CinqMinutes?.Invoke(); }
 
-        // Fin de forfait détectée localement (même si le serveur est injoignable)
         if (secondes > 0) _finSignalee = false;
-        else if (!_finSignalee)
-        {
-            _finSignalee = true;
-            ForfaitTermine?.Invoke();
-        }
+        else if (!_finSignalee) { _finSignalee = true; ForfaitTermine?.Invoke(); }
     }
 
-    private static string Duree(int secondes)
+    private static string Duree(int secondes) { var t = TimeSpan.FromSeconds(Math.Max(0, secondes)); return $"{(int)t.TotalHours:00}:{t.Minutes:00}:{t.Seconds:00}"; }
+    private static string FormaterHeure(string? iso) => DateTimeOffset.TryParse(iso, CultureInfo.InvariantCulture, DateTimeStyles.None, out var d) ? d.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture) : "—";
+
+    private async Task EnvoyerChatAsync()
     {
-        var t = TimeSpan.FromSeconds(Math.Max(0, secondes));
-        return $"{(int)t.TotalHours:00}:{t.Minutes:00}:{t.Seconds:00}";
+        var texte = _chatSaisie.Text.Trim();
+        if (texte.Length == 0 || MessageHandler == null || _occupe) return;
+        _chatSaisie.Clear();
+        await MessageHandler(texte);
     }
-
-    private static string FormaterHeure(string? iso) =>
-        DateTimeOffset.TryParse(iso, CultureInfo.InvariantCulture, DateTimeStyles.None, out var d)
-            ? d.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture)
-            : "—";
-
-    // ------------------------------------------------------------------
-    // Actions Suspendre / Quitter
-    // ------------------------------------------------------------------
 
     private async Task ExecuterAsync(Func<Task<ResultatAction>>? handler, string question, string titre)
     {
         if (_occupe || handler == null) return;
-
-        var choix = MessageBox.Show(this, question, titre,
-            MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
+        var choix = MessageBox.Show(this, question, titre, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
         if (choix != DialogResult.Yes || IsDisposed) return;
 
-        DefinirOccupe(true);
-        try
-        {
+        _occupe = true;
+        try {
             var r = await handler();
-            if (IsDisposed) return;   // le widget a été fermé entre-temps (succès ou ordre du serveur)
-            if (!r.Succes)
-                MessageBox.Show(this, r.Message, titre, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-        catch (Exception ex)
-        {
-            ClientWindow.Journal($"[Widget] Erreur : {ex.Message}");
-            if (!IsDisposed)
-                MessageBox.Show(this, "Erreur inattendue. Réessayez.", titre, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-        finally
-        {
-            if (!IsDisposed) DefinirOccupe(false);
-        }
+            if (!IsDisposed && !r.Succes) MessageBox.Show(this, r.Message, titre, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        } catch (Exception ex) { ClientWindow.Journal($"[Widget] Erreur : {ex.Message}"); }
+        finally { if (!IsDisposed) _occupe = false; }
     }
-
-    private void DefinirOccupe(bool occupe)
-    {
-        _occupe = occupe;
-        _btnCacher.Enabled = !occupe;
-        _btnSuspendre.Enabled = !occupe;
-        _btnQuitter.Enabled = !occupe;
-        Cursor = occupe ? Cursors.WaitCursor : Cursors.Default;
-    }
-
-    // ------------------------------------------------------------------
-    // Construction de l'interface
-    // ------------------------------------------------------------------
 
     private int S(int valeur) => (int)Math.Round(valeur * _k);
 
-    private Label Etiquette(string texte, float taille, FontStyle style, Color couleur,
-        int x, int y, int l, int h, string famille = "Segoe UI")
+    private Label Etiquette(string texte, float taille, FontStyle style, Color couleur, int x, int y, int l, int h, string famille = "Segoe UI")
     {
-        var lbl = new Label
-        {
-            Text = texte,
-            AutoSize = false,
-            Bounds = new Rectangle(S(x), S(y), S(l), S(h)),
-            TextAlign = ContentAlignment.MiddleCenter,
-            ForeColor = couleur,
-            BackColor = Color.Transparent,
-            Font = new Font(famille, taille, style)
-        };
-        Deplacable(lbl);
-        Controls.Add(lbl);
-        return lbl;
+        var lbl = new Label { Text = texte, AutoSize = false, Bounds = new Rectangle(S(x), S(y), S(l), S(h)), TextAlign = ContentAlignment.MiddleCenter, ForeColor = couleur, BackColor = Color.Transparent, Font = new Font(famille, taille, style) };
+        Deplacable(lbl); Controls.Add(lbl); return lbl;
     }
 
     private Button Bouton(string texte, Color fond, int x, EventHandler clic)
     {
-        var b = new Button
-        {
-            Text = texte,
-            FlatStyle = FlatStyle.Flat,
-            BackColor = fond,
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI", 8f, FontStyle.Bold),
-            Bounds = new Rectangle(S(x), S(128), S(58), S(42)),
-            TabStop = false,
-            Cursor = Cursors.Hand,
-            UseVisualStyleBackColor = false
-        };
-        b.FlatAppearance.BorderSize = 0;
-        b.Click += clic;
-        Controls.Add(b);
-        return b;
+        var b = new Button { Text = texte, FlatStyle = FlatStyle.Flat, BackColor = fond, ForeColor = Color.White, Font = new Font("Segoe UI", 9f, FontStyle.Bold), Bounds = new Rectangle(S(x), S(308), S(100), S(45)), TabStop = false, Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
+        b.FlatAppearance.BorderSize = 0; b.Click += clic; Controls.Add(b); return b;
     }
 
-    private void Deplacable(Control c) =>
-        c.MouseDown += (_, e) =>
-        {
-            if (e.Button != MouseButtons.Left || !IsHandleCreated) return;
-            ReleaseCapture();
-            SendMessage(Handle, 0x00A1, 2, 0);   // WM_NCLBUTTONDOWN + HTCAPTION
-        };
+    private void Deplacable(Control c) => c.MouseDown += (_, e) => { if (e.Button != MouseButtons.Left || !IsHandleCreated) return; ReleaseCapture(); SendMessage(Handle, 0x00A1, 2, 0); };
 
     [DllImport("user32.dll")] private static extern bool ReleaseCapture();
     [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr hWnd, int msg, int wParam, int lParam);
