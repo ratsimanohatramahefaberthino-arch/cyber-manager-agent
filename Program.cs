@@ -224,6 +224,54 @@ try
 
     PousserInfos();
 
+        // --- Identité du cyber (nom, slogan, couleur, logo) ---------------------
+    // Affichage immédiat avec ce qui est en cache local, puis mise à jour via le heartbeat.
+    fenetreUi.MettreAJourBranding(config.ToBranding());
+
+    var brandingOccupe = false;
+    async Task AppliquerBrandingAsync(BrandingInfo? b)
+    {
+        if (b == null || brandingOccupe) return;
+        brandingOccupe = true;
+        try
+        {
+            var nom = string.IsNullOrWhiteSpace(b.NomCyber) ? "Cyber Manager" : b.NomCyber.Trim();
+            var slogan = b.Slogan ?? "";
+            var couleur = string.IsNullOrWhiteSpace(b.Couleur) ? "#7c3aed" : b.Couleur;
+            var version = b.AvecLogo ? (b.LogoVersion ?? "") : "";
+
+            var texteChange = nom != config.NomCyber || slogan != config.Slogan || couleur != config.Couleur;
+            var logoChange = version != config.LogoVersion;
+            if (!texteChange && !logoChange) return;
+
+            if (logoChange)
+            {
+                if (version == "")
+                {
+                    try { File.Delete(AgentConfig.LogoPath); } catch { }
+                    config.LogoVersion = "";
+                }
+                else
+                {
+                    var octets = await api.TelechargerLogoAsync();
+                    if (octets == null) return;   // on réessaiera au prochain heartbeat
+                    await File.WriteAllBytesAsync(AgentConfig.LogoPath, octets);
+                    config.LogoVersion = version;
+                }
+            }
+
+            config.NomCyber = nom;
+            config.Slogan = slogan;
+            config.Couleur = couleur;
+            config.Save();
+
+            fenetreUi.MettreAJourBranding(config.ToBranding());
+            Log($"Identité du cyber mise à jour : '{nom}'{(version != "" ? " (avec logo)" : " (sans logo)")}.");
+        }
+        catch (Exception ex) { Log($"Identité du cyber : erreur ({ex.Message})."); }
+        finally { brandingOccupe = false; }
+    }
+
     // --- Boucle Heartbeat + handshake (5 s, backoff si panne) --------------
     _ = Task.Run(async () =>
     {
@@ -268,6 +316,7 @@ try
                             }
                             fenetreUi.MettreAJourSession(r.Donnees.Session);
                             fenetreUi.SyncFromServer(r.Donnees.DoitEtreVerrouille);
+                            await AppliquerBrandingAsync(r.Donnees.Branding);
                             break;
 
                         case ApiStatut.NonAutorise:

@@ -34,7 +34,6 @@ public class ApiClient
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
     }
 
-    /// <summary>IP et MAC de la carte réseau réellement utilisée pour joindre le serveur.</summary>
     public InfosReseau Reseau
     {
         get
@@ -47,10 +46,6 @@ public class ApiClient
             return _reseau;
         }
     }
-
-    // ------------------------------------------------------------------
-    // Appels API
-    // ------------------------------------------------------------------
 
     public async Task<ApiStatut> HandshakeAsync()
     {
@@ -80,7 +75,7 @@ public class ApiClient
             _config.AgentToken = token;
             if (!string.IsNullOrWhiteSpace(nom) && nom != _config.NomPoste)
             {
-                _config.NomPoste = nom;   // le serveur fait foi pour le nom
+                _config.NomPoste = nom;
                 modifie = true;
             }
             if (modifie) _config.Save();
@@ -101,6 +96,19 @@ public class ApiClient
             return hb is { Ok: true } ? new(ApiStatut.Ok, hb) : new(ApiStatut.Erreur);
         }
         catch { return new(ApiStatut.Erreur); }
+    }
+
+        /// <summary>Télécharge le logo du cyber. Null si absent ou en cas d'erreur (nouvel essai au prochain heartbeat).</summary>
+    public async Task<byte[]?> TelechargerLogoAsync()
+    {
+        try
+        {
+            using var res = await _http.GetAsync(_config.ServerUrl.TrimEnd('/') + "/api/agent/logo");
+            if (!res.IsSuccessStatusCode) return null;
+            var octets = await res.Content.ReadAsByteArrayAsync();
+            return octets.Length is > 0 and <= 5_000_000 ? octets : null;
+        }
+        catch { return null; }
     }
 
     public async Task<ApiReponse<List<AgentCommand>>> GetCommandsAsync()
@@ -135,7 +143,6 @@ public class ApiClient
         await EnvoyerAsync(HttpMethod.Post, $"/api/agent/commandes/{id}/confirmer", new { succes, message });
     }
 
-    /// <summary>Demande d'activation (bouton ACTIVER). Le serveur crée la session et connecte le poste.</summary>
     public async Task<ActivationResult> ActiverAsync()
     {
         var (statut, corps) = await EnvoyerAsync(HttpMethod.Post, "/api/agent/activer", new { });
@@ -144,33 +151,20 @@ public class ApiClient
         {
             case ApiStatut.Injoignable:
                 return ActivationResult.Echec("Serveur injoignable. Réessayez dans quelques instants.");
-
             case ApiStatut.NonAutorise:
-                _config.AgentToken = "";   // forcera un nouveau handshake
+                _config.AgentToken = "";
                 return ActivationResult.Echec("Poste en cours de reconnexion au serveur. Réessayez dans 5 secondes.");
-
             case ApiStatut.Erreur:
                 return ActivationResult.Echec(LireChamp(corps, "message") ?? "Activation refusée par le serveur.");
-
             default:
-                return new ActivationResult(true,
-                    LireChamp(corps, "message") ?? "Poste activé.",
-                    LireChamp(corps, "avertissement"));
+                return new ActivationResult(true, LireChamp(corps, "message") ?? "Poste activé.", LireChamp(corps, "avertissement"));
         }
     }
 
-        /// <summary>Le client suspend sa session depuis le widget : chrono figé côté serveur.</summary>
-    public Task<ResultatAction> SuspendreSessionAsync() =>
-        ActionSessionAsync("/api/agent/session/suspendre", "Session suspendue.");
-
-    /// <summary>Le client quitte depuis le widget : session clôturée, montant calculé, réseau coupé.</summary>
-    public Task<ResultatAction> FermerSessionAsync() =>
-        ActionSessionAsync("/api/agent/session/fermer", "Session terminée.");
-
-
-    /// <summary>Le client écrit à l'accueil (chat client → admin).</summary>
-    public Task<ResultatAction> EnvoyerMessageAsync(string texte) =>
-        ActionSessionAsync("/api/agent/message", "Message envoyé.", new { texte });
+    public Task<ResultatAction> SuspendreSessionAsync() => ActionSessionAsync("/api/agent/session/suspendre", "Session suspendue.");
+    public Task<ResultatAction> FermerSessionAsync() => ActionSessionAsync("/api/agent/session/fermer", "Session terminée.");
+    public Task<ResultatAction> ReprendreSessionAsync() => ActionSessionAsync("/api/agent/session/reprendre", "Session reprise.");
+    public Task<ResultatAction> EnvoyerMessageAsync(string texte) => ActionSessionAsync("/api/agent/message", "Message envoyé.", new { texte });
 
     private async Task<ResultatAction> ActionSessionAsync(string chemin, string messageParDefaut, object? payload = null)
     {
@@ -180,25 +174,17 @@ public class ApiClient
         {
             case ApiStatut.Injoignable:
                 return new ResultatAction(false, "Serveur injoignable. Réessayez dans quelques instants.");
-
             case ApiStatut.NonAutorise:
-                _config.AgentToken = "";   // forcera un nouveau handshake
+                _config.AgentToken = "";
                 return new ResultatAction(false, "Poste en cours de reconnexion au serveur. Réessayez dans 5 secondes.");
-
             case ApiStatut.Erreur:
                 return new ResultatAction(false, LireChamp(corps, "message") ?? "Action refusée par le serveur.");
-
             default:
                 return new ResultatAction(true, LireChamp(corps, "message") ?? messageParDefaut, LireEntier(corps, "montant"));
         }
     }
 
-    // ------------------------------------------------------------------
-    // Helpers
-    // ------------------------------------------------------------------
-
-    private async Task<(ApiStatut statut, string? corps)> EnvoyerAsync(
-        HttpMethod methode, string chemin, object? payload = null, bool avecToken = true)
+    private async Task<(ApiStatut statut, string? corps)> EnvoyerAsync(HttpMethod methode, string chemin, object? payload = null, bool avecToken = true)
     {
         try
         {
@@ -208,8 +194,7 @@ public class ApiClient
                 req.Headers.Add("X-Agent-Token", _config.AgentToken);
 
             if (methode != HttpMethod.Get)
-                req.Content = new StringContent(
-                    JsonSerializer.Serialize(payload ?? new { }), Encoding.UTF8, "application/json");
+                req.Content = new StringContent(JsonSerializer.Serialize(payload ?? new { }), Encoding.UTF8, "application/json");
 
             using var res = await _http.SendAsync(req);
             var corps = await res.Content.ReadAsStringAsync();
@@ -217,10 +202,7 @@ public class ApiClient
             if (res.StatusCode == HttpStatusCode.Unauthorized) return (ApiStatut.NonAutorise, corps);
             return (res.IsSuccessStatusCode ? ApiStatut.Ok : ApiStatut.Erreur, corps);
         }
-        catch
-        {
-            return (ApiStatut.Injoignable, null);
-        }
+        catch { return (ApiStatut.Injoignable, null); }
     }
 
     private static string? LireChamp(string? json, string champ)
@@ -235,7 +217,7 @@ public class ApiClient
         catch { return null; }
     }
 
-        private static int? LireEntier(string? json, string champ)
+    private static int? LireEntier(string? json, string champ)
     {
         if (string.IsNullOrWhiteSpace(json)) return null;
         try
@@ -247,10 +229,6 @@ public class ApiClient
         catch { return null; }
     }
 
-    /// <summary>
-    /// Détermine l'IP locale utilisée pour joindre le serveur, puis la MAC de cette même carte
-    /// (et non d'une carte virtuelle/VPN au hasard).
-    /// </summary>
     private static InfosReseau LireReseau(string serverUrl)
     {
         string ip = "", mac = "";
@@ -259,7 +237,7 @@ public class ApiClient
             if (Uri.TryCreate(serverUrl, UriKind.Absolute, out var uri))
             {
                 using var s = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, 0);
-                s.Connect(uri.Host, uri.Port);   // UDP : aucun paquet envoyé
+                s.Connect(uri.Host, uri.Port);
                 var local = (s.LocalEndPoint as IPEndPoint)?.Address;
                 if (local != null)
                 {
@@ -276,7 +254,6 @@ public class ApiClient
         }
         catch { }
 
-        // Repli : première carte active non loopback
         if (mac == "")
         {
             try
@@ -295,9 +272,6 @@ public class ApiClient
         return new InfosReseau(ip, mac);
     }
 
-    public Task<ResultatAction> ReprendreSessionAsync() =>
-        ActionSessionAsync("/api/agent/session/reprendre", "Session reprise.");
-
     private static string FormaterMac(string brut) =>
         brut.Length == 12
             ? string.Join(":", Enumerable.Range(0, 6).Select(i => brut.Substring(i * 2, 2))).ToUpperInvariant()
@@ -311,6 +285,7 @@ public class HeartbeatResponse
     [JsonPropertyName("etat")] public string? Etat { get; set; }
     [JsonPropertyName("doit_etre_verrouille")] public bool DoitEtreVerrouille { get; set; }
     [JsonPropertyName("session")] public SessionInfo? Session { get; set; }
+    [JsonPropertyName("branding")] public BrandingInfo? Branding { get; set; }
 }
 
 public class SessionInfo
@@ -320,10 +295,12 @@ public class SessionInfo
     [JsonPropertyName("date_heure_debut")] public string? DateHeureDebut { get; set; }
     [JsonPropertyName("date_heure_fin")] public string? DateHeureFin { get; set; }
     [JsonPropertyName("duree_prevue")] public int DureePrevue { get; set; }
+    [JsonPropertyName("forfait_total")] public int ForfaitTotal { get; set; } // AJOUT
     [JsonPropertyName("montant_actuel")] public int MontantActuel { get; set; }
     [JsonPropertyName("etat")] public string? Etat { get; set; }
     [JsonPropertyName("ecoule_s")] public int EcouleS { get; set; }
     [JsonPropertyName("restant_s")] public int? RestantS { get; set; }
+    [JsonPropertyName("tarif")] public TarifInfo? Tarif { get; set; }
 }
 
 public class AgentCommand
@@ -331,4 +308,23 @@ public class AgentCommand
     public int Id { get; set; }
     public string Type { get; set; } = "";
     public string? Payload { get; set; }
+}
+
+public class TarifInfo
+{
+    [JsonPropertyName("par_minute")] public int ParMinute { get; set; } = 20;
+    [JsonPropertyName("minimum")] public int Minimum { get; set; } = 300;
+    [JsonPropertyName("arrondi_actif")] public bool ArrondiActif { get; set; }
+    [JsonPropertyName("unite")] public int Unite { get; set; }
+    [JsonPropertyName("seuil")] public int Seuil { get; set; }
+}
+
+
+public class BrandingInfo
+{
+    [JsonPropertyName("nom_cyber")] public string? NomCyber { get; set; }
+    [JsonPropertyName("slogan")] public string? Slogan { get; set; }
+    [JsonPropertyName("couleur")] public string? Couleur { get; set; }
+    [JsonPropertyName("avec_logo")] public bool AvecLogo { get; set; }
+    [JsonPropertyName("logo_version")] public string? LogoVersion { get; set; }
 }

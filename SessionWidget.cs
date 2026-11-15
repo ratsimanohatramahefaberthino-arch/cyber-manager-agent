@@ -1,3 +1,4 @@
+using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.Runtime.InteropServices;
 
@@ -32,6 +33,8 @@ public class SessionWidget : Form
     private int _ecouleBase;
     private int? _restantBase;
     private int _montant;
+    private int _forfaitTotal;
+    private TarifInfo _tarif = new();
     private string _debut = "—";
     private long _recuTick = Environment.TickCount64;
 
@@ -39,33 +42,40 @@ public class SessionWidget : Form
     private bool _alerte5, _finSignalee;
     private int _ticks;
 
+    private static Icon? _iconeApp;
+    
+    private static string _nomCyber = "Cyber Manager";
+    private static string _couleurHex = "#7c3aed";
+    private static byte[]? _logoOctets;
+    private Label? _lblTitre;
+
     public SessionWidget()
     {
         _k = Math.Max(1f, DeviceDpi / 96f);
 
-        Text = "Cyber Manager";
+        Text = _nomCyber;
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
-        ShowInTaskbar = false;
-        TopMost = true;
+        ShowInTaskbar = true;                      // icône dans la barre des tâches (clic = ramener le widget)
+        Icon = IconeApp();                         // icône personnalisée (écran violet) au lieu de l'engrenage par défaut
+        MinimizeBox = true;
+        TopMost = false;                           // ne passe jamais devant Word, Chrome, etc.
         BackColor = Fond;
-        ClientSize = new Size(S(340), S(360));
+        ClientSize = new Size(S(240), S(250));
         DoubleBuffered = true;
         Deplacable(this);
 
-        // Section 1: Les chronos et montants (Grands et lisibles)
-        Etiquette("CYBER MANAGER", 10f, FontStyle.Bold, VioletClair, 0, 8, 340, 20);
-        _lblCaption = Etiquette("TEMPS ÉCOULÉ", 10f, FontStyle.Bold, Discret, 0, 32, 340, 18);
-        _lblTemps = Etiquette("00:00:00", 22f, FontStyle.Bold, Ambre, 0, 52, 340, 40, "Consolas");
-        _lblMontant = Etiquette("", 14f, FontStyle.Bold, Texte, 0, 96, 340, 24);
-        _lblDebut = Etiquette("", 10f, FontStyle.Regular, Discret, 0, 124, 340, 18);
+        _lblTitre = Etiquette(_nomCyber.ToUpperInvariant(), 8f, FontStyle.Bold, VioletClair, 0, 4, 240, 18);
+        _lblCaption = Etiquette("TEMPS ÉCOULÉ", 8f, FontStyle.Bold, Discret, 0, 24, 240, 16);
+        _lblTemps = Etiquette("00:00:00", 16f, FontStyle.Bold, Ambre, 0, 42, 240, 30, "Consolas");
+        _lblMontant = Etiquette("", 10f, FontStyle.Bold, Texte, 0, 74, 240, 20);
+        _lblDebut = Etiquette("", 8f, FontStyle.Regular, Discret, 0, 96, 240, 16);
 
-        // Section 2: Chat
         _chatBox = new RichTextBox
         {
             ReadOnly = true, BorderStyle = BorderStyle.None, DetectUrls = false, TabStop = false,
-            ScrollBars = RichTextBoxScrollBars.Vertical, Font = new Font("Segoe UI", 9f),
-            Bounds = new Rectangle(S(8), S(148), S(324), S(120))
+            ScrollBars = RichTextBoxScrollBars.Vertical, Font = new Font("Segoe UI", 8f),
+            Bounds = new Rectangle(S(6), S(116), S(228), S(64))
         };
         _chatBox.BackColor = Color.FromArgb(19, 28, 58);
         _chatBox.ForeColor = Texte;
@@ -75,8 +85,8 @@ public class SessionWidget : Form
         _chatSaisie = new TextBox
         {
             BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(19, 28, 58), ForeColor = Color.White,
-            Font = new Font("Segoe UI", 10f), PlaceholderText = "Écrire...",
-            Bounds = new Rectangle(S(8), S(272), S(260), S(28))
+            Font = new Font("Segoe UI", 8f), PlaceholderText = "Écrire...",
+            Bounds = new Rectangle(S(6), S(184), S(180), S(22))
         };
         _chatSaisie.KeyDown += async (_, e) => {
             if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; await EnvoyerChatAsync(); }
@@ -86,54 +96,149 @@ public class SessionWidget : Form
         _btnEnvoyer = new Button
         {
             Text = "➤", FlatStyle = FlatStyle.Flat, BackColor = Violet, ForeColor = Color.White,
-            Font = new Font("Segoe UI", 10f, FontStyle.Bold), Bounds = new Rectangle(S(270), S(272), S(62), S(28)),
+            Font = new Font("Segoe UI", 8f, FontStyle.Bold), Bounds = new Rectangle(S(188), S(184), S(46), S(22)),
             TabStop = false, Cursor = Cursors.Hand, UseVisualStyleBackColor = false
         };
         _btnEnvoyer.FlatAppearance.BorderSize = 0;
         _btnEnvoyer.Click += async (_, _) => await EnvoyerChatAsync();
         Controls.Add(_btnEnvoyer);
 
-        // Section 3: Boutons d'action (toujours en bas)
-        _btnCacher = Bouton("Réduire", Ardoise, 8, (_, _) => BasculerReduction());
-        _btnSuspendre = Bouton("Suspendre", Violet, 116, async (_, _) => await ExecuterAsync(SuspendreHandler, "Suspendre votre session ?", "Suspendre"));
-        _btnQuitter = Bouton("Quitter", Rouge, 224, async (_, _) => await ExecuterAsync(QuitterHandler, "Terminer votre session ?", "Quitter"));
+        _btnCacher = Bouton("Réduire", Ardoise, 6, (_, _) => BasculerReduction());
+        _btnSuspendre = Bouton("Suspendre", Violet, 82, async (_, _) => await ExecuterAsync(SuspendreHandler, "Suspendre votre session ?", "Suspendre"));
+        _btnQuitter = Bouton("Quitter", Rouge, 158, async (_, _) => await ExecuterAsync(QuitterHandler, "Terminer votre session ?", "Quitter"));
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("Afficher le compteur", null, (_, _) => BasculerReduction(false));
         _tray = new NotifyIcon
         {
-            Icon = SystemIcons.Application, Text = "Cyber Manager", ContextMenuStrip = menu, Visible = false
+            Icon = IconeApp(), Text = "Cyber Manager", ContextMenuStrip = menu, Visible = false
         };
         _tray.DoubleClick += (_, _) => BasculerReduction(false);
 
         _timer = new System.Windows.Forms.Timer { Interval = 1000 };
-        _timer.Tick += (_, _) =>
-        {
-            Rafraichir();
-            if (++_ticks % 5 == 0 && Visible && IsHandleCreated)
-                SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);
-        };
+        _timer.Tick += (_, _) => { Rafraichir(); if (Visible) PlacerBasDroite(); };
         _timer.Start();
 
         Rafraichir();
     }
 
+    /// <summary>Applique l'identité du cyber (appelé par ClientWindow, une seule fois par changement).</summary>
+    public static void DefinirBranding(string nom, string couleurHex, byte[]? logo)
+    {
+        _nomCyber = string.IsNullOrWhiteSpace(nom) ? "Cyber Manager" : nom;
+        _couleurHex = string.IsNullOrWhiteSpace(couleurHex) ? "#7c3aed" : couleurHex;
+        _logoOctets = logo;
+        _iconeApp = null;   // l'icône sera redessinée au prochain appel
+    }
+
+    /// <summary>Met à jour un widget déjà ouvert (titre, icône barre des tâches et zone de notification).</summary>
+    public void AppliquerBranding()
+    {
+        if (IsDisposed) return;
+        Text = _nomCyber;
+        if (_lblTitre != null) _lblTitre.Text = _nomCyber.ToUpperInvariant();
+        try { Icon = IconeApp(); _tray.Icon = IconeApp(); } catch { }
+    }
+
+    private static Color CouleurAccent()
+    {
+        try { return ColorTranslator.FromHtml(_couleurHex); }
+        catch { return Color.FromArgb(124, 58, 237); }
+    }
+
+    private static Color Assombrir(Color c, float f) =>
+        Color.FromArgb(c.A, (int)(c.R * f), (int)(c.G * f), (int)(c.B * f));
+
+    /// <summary>
+    /// Icône de l'application : le logo du cyber (sur fond blanc arrondi) s'il existe,
+    /// sinon un écran blanc sur fond dégradé à la couleur du cyber. Mise en cache.
+    /// </summary>
+    public static Icon IconeApp()
+    {
+        if (_iconeApp != null) return _iconeApp;
+        try
+        {
+            using var bmp = new Bitmap(64, 64);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.Clear(Color.Transparent);
+
+                var rect = new Rectangle(2, 2, 60, 60);
+                const int r = 14;
+                using var path = new GraphicsPath();
+                path.AddArc(rect.X, rect.Y, r * 2, r * 2, 180, 90);
+                path.AddArc(rect.Right - r * 2, rect.Y, r * 2, r * 2, 270, 90);
+                path.AddArc(rect.Right - r * 2, rect.Bottom - r * 2, r * 2, r * 2, 0, 90);
+                path.AddArc(rect.X, rect.Bottom - r * 2, r * 2, r * 2, 90, 90);
+                path.CloseFigure();
+
+                var logoDessine = false;
+                if (_logoOctets is { Length: > 0 })
+                {
+                    try
+                    {
+                        using var ms = new MemoryStream(_logoOctets);
+                        using var img = Image.FromStream(ms);
+                        using (var blanc = new SolidBrush(Color.White)) g.FillPath(blanc, path);
+                        var ratio = Math.Min(52f / img.Width, 52f / img.Height);
+                        var w = img.Width * ratio;
+                        var h = img.Height * ratio;
+                        g.DrawImage(img, (64 - w) / 2f, (64 - h) / 2f, w, h);
+                        logoDessine = true;
+                    }
+                    catch { logoDessine = false; }
+                }
+
+                if (!logoDessine)
+                {
+                    var accent = CouleurAccent();
+                    using (var fond = new LinearGradientBrush(rect, accent, Assombrir(accent, 0.65f), 45f))
+                        g.FillPath(fond, path);
+
+                    using var stylo = new Pen(Color.White, 4f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                    g.DrawRectangle(stylo, 14, 15, 36, 24);   // écran
+                    g.DrawLine(stylo, 32, 40, 32, 47);        // pied
+                    g.DrawLine(stylo, 22, 48, 42, 48);        // socle
+                }
+            }
+
+            var hIcone = bmp.GetHicon();
+            try
+            {
+                using var temporaire = Icon.FromHandle(hIcone);
+                _iconeApp = (Icon)temporaire.Clone();
+            }
+            finally { DestroyIcon(hIcone); }
+        }
+        catch
+        {
+            _iconeApp = SystemIcons.Application;
+        }
+        return _iconeApp;
+    }
+
     public void MettreAJour(SessionInfo s)
     {
         var nouvelle = s.Id != _sessionId;
+        var premiereFois = _sessionId == -1;   // widget tout juste créé : son historique vient d'être rechargé
         _sessionId = s.Id;
         _mode = s.Mode ?? "postpaye";
         _ecouleBase = Math.Max(0, s.EcouleS);
         _restantBase = s.RestantS;
         _montant = Math.Max(0, s.MontantActuel);
+        _forfaitTotal = s.ForfaitTotal;
+        _tarif = s.Tarif ?? new TarifInfo();
         _debut = FormaterHeure(s.DateHeureDebut);
         _recuTick = Environment.TickCount64;
 
         if (nouvelle)
         {
             _modeReduit = false; _alerte5 = false; _finSignalee = false;
-            _chatBox.Clear();
-            // Recaler le widget en bas
+            // CORRECTIF : on n'efface PAS le chat quand le widget vient d'être (re)créé
+            // (reprise après suspension) : l'historique conservé par ClientWindow vient d'y être injecté.
+            if (!premiereFois) _chatBox.Clear();
             _positionne = false;
             Afficher();
         }
@@ -144,11 +249,11 @@ public class SessionWidget : Form
     public void AjouterMessageChat(MessageChat m)
     {
         _chatBox.Select(_chatBox.TextLength, 0);
-        _chatBox.SelectionFont = new Font("Segoe UI", 8f, FontStyle.Bold);
+        _chatBox.SelectionFont = new Font("Segoe UI", 7.5f, FontStyle.Bold);
         _chatBox.SelectionColor = Discret;
         _chatBox.SelectedText = (m.DeMoi ? "Moi" : "Accueil") + " · " + m.Heure + "\n";
-        
-        _chatBox.SelectionFont = new Font("Segoe UI", 9f);
+
+        _chatBox.SelectionFont = new Font("Segoe UI", 8f);
         _chatBox.SelectionColor = m.DeMoi ? VioletClair : Texte;
         _chatBox.SelectedText = m.Texte + "\n\n";
         _chatBox.ScrollToCaret();
@@ -160,70 +265,95 @@ public class SessionWidget : Form
 
     public void Fermer() { _fermetureAutorisee = true; Close(); }
 
-    protected override bool ShowWithoutActivation => true;
-    protected override CreateParams CreateParams { get { var cp = base.CreateParams; cp.ExStyle |= 0x80; return cp; } }
+    protected override bool ShowWithoutActivation => true;   // à l'apparition, ne vole pas le focus
+
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            cp.Style |= 0x00020000;       // WS_MINIMIZEBOX : le clic sur l'icône de la barre des tâches peut réduire / restaurer
+            cp.ExStyle |= 0x00040000;     // WS_EX_APPWINDOW : bouton dans la barre des tâches
+            cp.ExStyle &= ~0x80;          // retire WS_EX_TOOLWINDOW (qui cachait le widget de la barre des tâches)
+            return cp;
+        }
+    }
+
     protected override void OnFormClosing(FormClosingEventArgs e) { if (!_fermetureAutorisee && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; return; } base.OnFormClosing(e); }
+    protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); if (IsHandleCreated) PlacerBasDroite(); }
     protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); using var pen = new Pen(Color.FromArgb(110, 139, 92, 246)); e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1); }
     protected override void Dispose(bool disposing) { if (disposing) { _timer.Dispose(); _tray.Visible = false; _tray.Dispose(); } base.Dispose(disposing); }
+
+    /// <summary>Position fixe : coin inférieur DROIT de la zone de travail (au-dessus de la barre des tâches).</summary>
+    private void PlacerBasDroite()
+    {
+        if (IsDisposed || WindowState != FormWindowState.Normal) return;
+        var zone = Screen.PrimaryScreen?.WorkingArea ?? SystemInformation.WorkingArea;
+        var cible = new Point(zone.Right - Width, zone.Bottom - Height);
+        if (Location != cible) Location = cible;
+    }
 
     private void Afficher()
     {
         if (IsDisposed) return;
         if (!_positionne)
         {
-            var zone = Screen.PrimaryScreen?.WorkingArea ?? SystemInformation.WorkingArea;
-            // Toujours collé en bas à droite
-            Location = new Point(zone.Right - Width - S(12), zone.Bottom - Height);
+            PlacerBasDroite();
             _positionne = true;
         }
         _tray.Visible = false;
         if (!Visible) Show();
-        TopMost = true;
     }
 
     private void BasculerReduction(bool? forceReduit = null)
     {
         _modeReduit = forceReduit ?? !_modeReduit;
-        
+
         _lblCaption.Visible = !_modeReduit;
         _lblTemps.Visible = !_modeReduit;
         _lblDebut.Visible = !_modeReduit;
         _chatBox.Visible = !_modeReduit;
         _chatSaisie.Visible = !_modeReduit;
         _btnEnvoyer.Visible = !_modeReduit;
-        
+
         _lblMontant.Visible = true;
         _btnCacher.Text = _modeReduit ? "Afficher" : "Réduire";
 
-        var zone = Screen.PrimaryScreen?.WorkingArea ?? SystemInformation.WorkingArea;
-
         if (_modeReduit)
         {
-            ClientSize = new Size(S(340), S(150));
-            _lblMontant.Bounds = new Rectangle(S(0), S(32), S(340), S(30));
+            ClientSize = new Size(S(240), S(90));
+            _lblMontant.Bounds = new Rectangle(S(0), S(15), S(240), S(25));
             _lblMontant.TextAlign = ContentAlignment.MiddleCenter;
-            _lblMontant.Font = new Font("Segoe UI", 14f, FontStyle.Bold);
-            
-            _btnCacher.Bounds = new Rectangle(S(8), S(90), S(100), S(45));
-            _btnSuspendre.Bounds = new Rectangle(S(116), S(90), S(100), S(45));
-            _btnQuitter.Bounds = new Rectangle(S(224), S(90), S(100), S(45));
+
+            _btnCacher.Bounds = new Rectangle(S(6), S(45), S(72), S(35));
+            _btnSuspendre.Bounds = new Rectangle(S(82), S(45), S(72), S(35));
+            _btnQuitter.Bounds = new Rectangle(S(158), S(45), S(72), S(35));
         }
         else
         {
-            ClientSize = new Size(S(340), S(360));
-            _lblMontant.Bounds = new Rectangle(S(0), S(96), S(340), S(24));
+            ClientSize = new Size(S(240), S(250));
+            _lblMontant.Bounds = new Rectangle(S(0), S(74), S(240), S(20));
             _lblMontant.TextAlign = ContentAlignment.MiddleCenter;
-            _lblMontant.Font = new Font("Segoe UI", 14f, FontStyle.Bold);
 
-            _btnCacher.Bounds = new Rectangle(S(8), S(308), S(100), S(45));
-            _btnSuspendre.Bounds = new Rectangle(S(116), S(308), S(100), S(45));
-            _btnQuitter.Bounds = new Rectangle(S(224), S(308), S(100), S(45));
+            _btnCacher.Bounds = new Rectangle(S(6), S(210), S(72), S(35));
+            _btnSuspendre.Bounds = new Rectangle(S(82), S(210), S(72), S(35));
+            _btnQuitter.Bounds = new Rectangle(S(158), S(210), S(72), S(35));
         }
 
-        // Recaler en bas
-        Location = new Point(zone.Right - Width - S(12), zone.Bottom - Height);
-
+        PlacerBasDroite();
         if (!Visible) Afficher();
+    }
+
+    /// <summary>
+    /// Montant temps réel : STRICTEMENT max(minimum, minutes × prix/minute).
+    /// Le paramètre « arrondi » des tarifs n'est volontairement PAS appliqué ici
+    /// (même formule que le panneau admin et que PosteSessionService::montant() côté Laravel).
+    /// </summary>
+    private int MontantPourMinutes(int minutes)
+    {
+        var t = _tarif;
+        long brut = (long)Math.Max(0, minutes) * t.ParMinute;
+        return (int)Math.Max((long)t.Minimum, brut);
     }
 
     private void Rafraichir()
@@ -237,16 +367,10 @@ public class SessionWidget : Form
         _lblTemps.ForeColor = forfait && secondes <= 300 ? Color.FromArgb(248, 113, 113) : Ambre;
 
         if (_mode == "libre") _lblMontant.Text = "Sans facturation";
-        else if (_mode == "forfait") _lblMontant.Text = $"Forfait : {FormaterAr(_montant)}";
+        else if (_mode == "forfait") _lblMontant.Text = $"Forfait : {FormaterAr(_forfaitTotal)}";
         else {
-            // Postpayé temps réel
-            var min = (int)(secondes / 60);
-            var tarif = 20; // Fallback si le serveur n'envoie pas le tarif, sinon on prend le montant renvoyé par le serveur
-            var montantCalcule = Math.Max(300, min * tarif); 
-            
-            // Si le serveur a envoyé un montant plus grand, on l'utilise
-            var affichage = Math.Max(_montant, montantCalcule);
-            _lblMontant.Text = "À payer : " + FormaterAr(affichage);
+            var min = secondes / 60;
+            _lblMontant.Text = "À payer : " + FormaterAr(MontantPourMinutes(min));
         }
 
         _lblDebut.Text = "Début : " + _debut;
@@ -295,13 +419,14 @@ public class SessionWidget : Form
 
     private Button Bouton(string texte, Color fond, int x, EventHandler clic)
     {
-        var b = new Button { Text = texte, FlatStyle = FlatStyle.Flat, BackColor = fond, ForeColor = Color.White, Font = new Font("Segoe UI", 9f, FontStyle.Bold), Bounds = new Rectangle(S(x), S(308), S(100), S(45)), TabStop = false, Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
+        var b = new Button { Text = texte, FlatStyle = FlatStyle.Flat, BackColor = fond, ForeColor = Color.White, Font = new Font("Segoe UI", 8f, FontStyle.Bold), Bounds = new Rectangle(S(x), S(210), S(72), S(35)), TabStop = false, Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
         b.FlatAppearance.BorderSize = 0; b.Click += clic; Controls.Add(b); return b;
     }
 
-    private void Deplacable(Control c) => c.MouseDown += (_, e) => { if (e.Button != MouseButtons.Left || !IsHandleCreated) return; ReleaseCapture(); SendMessage(Handle, 0x00A1, 2, 0); };
+    // Le widget est FIXE (bas-droite) : le déplacement par glisser-déposer est volontairement désactivé.
+    private void Deplacable(Control c) { }
 
     [DllImport("user32.dll")] private static extern bool ReleaseCapture();
     [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr hWnd, int msg, int wParam, int lParam);
-    [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
+    [DllImport("user32.dll", CharSet = CharSet.Auto)] private static extern bool DestroyIcon(IntPtr hIcon);
 }

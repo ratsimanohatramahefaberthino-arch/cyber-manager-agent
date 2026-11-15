@@ -38,7 +38,6 @@ public class ClientWindow : Form
     private long _graceVerrouTicks;
 
     private SessionWidget? _widget;
-    private ChatPanel? _chat;
     private SessionInfo? _session;
 
     private readonly List<MessageChat> _historique = new();
@@ -48,6 +47,7 @@ public class ClientWindow : Form
     private int _arretRestant;
 
     private string _poste = "", _ip = "", _etat = "serveur_injoignable";
+    private BrandingData _brand = new("Cyber Manager", "Gestion de cybercafé", "#7c3aed", null);
 
     private readonly LowLevelKeyboardProc? _proc;
     private IntPtr _hook = IntPtr.Zero;
@@ -66,9 +66,7 @@ public class ClientWindow : Form
             StartPosition = FormStartPosition.CenterScreen;
             ClientSize = new Size(1100, 700);
             ShowInTaskbar = true;
-            TopMost = false; // Mode fenêtré classique
-            MaximizeBox = true;
-            MinimizeBox = true;
+            TopMost = false;
         }
         else
         {
@@ -79,20 +77,12 @@ public class ClientWindow : Form
             TopMost = true;
         }
 
-        _web = new WebView2
-        {
-            Dock = DockStyle.Fill,
-            DefaultBackgroundColor = Color.FromArgb(11, 18, 38)
-        };
+        _web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.FromArgb(11, 18, 38) };
         
         _attente = new Label
         {
-            Dock = DockStyle.Fill,
-            BackColor = Color.FromArgb(11, 18, 38),
-            ForeColor = Color.FromArgb(148, 163, 184),
-            Font = new Font("Segoe UI", 16),
-            TextAlign = ContentAlignment.MiddleCenter,
-            Text = "Cyber Manager — démarrage…"
+            Dock = DockStyle.Fill, BackColor = Color.FromArgb(11, 18, 38), ForeColor = Color.FromArgb(148, 163, 184),
+            Font = new Font("Segoe UI", 16), TextAlign = ContentAlignment.MiddleCenter, Text = "Cyber Manager — démarrage…"
         };
         Controls.Add(_web);
         Controls.Add(_attente);
@@ -165,6 +155,35 @@ public class ClientWindow : Form
         SurUi(PousserInfos);
     }
 
+        /// <summary>Applique nom, slogan, couleur et logo du cyber (écran de verrouillage, widget, icônes).</summary>
+    public void MettreAJourBranding(BrandingData b)
+    {
+        // Mémorisé tout de suite (même si la fenêtre n'a pas encore de handle) : repoussé au chargement de la page.
+        _brand = b;
+        SessionWidget.DefinirBranding(b.Nom, b.Couleur, b.Logo);
+
+        SurUi(() =>
+        {
+            Text = b.Nom + " — Agent";
+            try { Icon = SessionWidget.IconeApp(); } catch { }
+            if (_widget is { IsDisposed: false } w) w.AppliquerBranding();
+            PousserBranding();
+        });
+    }
+
+    private void PousserBranding()
+    {
+        var b = _brand;
+        string? logo = null;
+        if (b.Logo is { Length: > 0 })
+            logo = "data:" + MimeLogo(b.Logo) + ";base64," + Convert.ToBase64String(b.Logo);
+
+        Poster(new { type = "branding", nom = b.Nom, slogan = b.Slogan, couleur = b.Couleur, logo });
+    }
+
+    private static string MimeLogo(byte[] o) =>
+        o.Length > 3 && o[0] == 0x89 && o[1] == 0x50 ? "image/png" : "image/jpeg";
+
     public void MettreAJourSession(SessionInfo? session)
     {
         var precedente = _session;
@@ -236,7 +255,6 @@ public class ClientWindow : Form
 
             if (!etaitVerrouille)
             {
-                if (_chat is { IsDisposed: false }) _chat.Hide();
                 ToastForm.FermerTous();
                 PousserInfos();
             }
@@ -271,14 +289,10 @@ public class ClientWindow : Form
     {
         if (disposing)
         {
-            _garde.Dispose();
-            _finTimer.Dispose();
-            _arretTimer.Dispose();
+            _garde.Dispose(); _finTimer.Dispose(); _arretTimer.Dispose();
             if (_hook != IntPtr.Zero) { UnhookWindowsHookEx(_hook); _hook = IntPtr.Zero; }
             if (_widget is { IsDisposed: false }) _widget.Dispose();
             _widget = null;
-            if (_chat is { IsDisposed: false }) _chat.Fermer();
-            _chat = null;
         }
         base.Dispose(disposing);
     }
@@ -304,9 +318,7 @@ public class ClientWindow : Form
             };
             w.CinqMinutes += SurCinqMinutes;
             w.ForfaitTermine += SurForfaitTermine;
-            
             foreach(var m in _historique) w.AjouterMessageChat(m);
-            
             w.FormClosed += (_, _) => { if (ReferenceEquals(_widget, w)) _widget = null; };
             _widget = w;
         }
@@ -315,7 +327,6 @@ public class ClientWindow : Form
 
     private void FermerWidget()
     {
-        if (_chat is { IsDisposed: false }) _chat.Hide();
         var w = _widget;
         _widget = null;
         if (w != null && !w.IsDisposed) w.Fermer();
@@ -346,10 +357,8 @@ public class ClientWindow : Form
             if (r.Montant is > 0)
             {
                 var texte = $"Session terminée.\n\nMontant à payer : {SessionWidget.FormaterAr(r.Montant.Value)}\n\nMerci de régler à l'accueil.";
-                if (_widget is { IsDisposed: false } w)
-                    MessageBox.Show(w, texte, "Cyber Manager", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                else
-                    MessageBox.Show(texte, "Cyber Manager", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                if (_widget is { IsDisposed: false } w) MessageBox.Show(w, texte, "Cyber Manager", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                else MessageBox.Show(texte, "Cyber Manager", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             _session = null;
             ViderHistorique();
@@ -358,10 +367,7 @@ public class ClientWindow : Form
         return r;
     }
 
-    private void SurCinqMinutes()
-    {
-        ToastForm.Afficher("Il reste 5 minutes", "Votre forfait se termine bientôt.", NiveauToast.Alerte, 10000);
-    }
+    private void SurCinqMinutes() => ToastForm.Afficher("Il reste 5 minutes", "Votre forfait se termine bientôt.", NiveauToast.Alerte, 10000);
 
     private void SurForfaitTermine()
     {
@@ -384,16 +390,13 @@ public class ClientWindow : Form
         AjouterHistorique(m);
 
         if (_desiredLocked) return; 
-        if (_chat is { IsDisposed: false, Visible: true }) return;
-        
-        ToastForm.Afficher("Message de l'accueil", texte, NiveauToast.Message, 9000, OuvrirChat);
+        ToastForm.Afficher("Message de l'accueil", texte, NiveauToast.Message, 9000);
     }
 
     private void AjouterHistorique(MessageChat m)
     {
         _historique.Add(m);
         if (_historique.Count > MaxHistorique) _historique.RemoveAt(0);
-        if (_chat is { IsDisposed: false }) _chat.Ajouter(m);
         if (_widget is { IsDisposed: false } w) w.AjouterMessageChat(m);
         Poster(new { type = "message", moi = m.DeMoi, texte = m.Texte, heure = m.Heure });
     }
@@ -401,28 +404,7 @@ public class ClientWindow : Form
     private void ViderHistorique()
     {
         _historique.Clear();
-        if (_chat is { IsDisposed: false }) { _chat.Hide(); _chat.Vider(); }
         Poster(new { type = "historique_vide" });
-    }
-
-    private ChatPanel AssurerChat()
-    {
-        if (_chat == null || _chat.IsDisposed)
-        {
-            var c = new ChatPanel { EnvoyerHandler = EnvoyerMessageClientAsync };
-            c.Charger(_historique);
-            _chat = c;
-        }
-        return _chat;
-    }
-
-    private void OuvrirChat()
-    {
-        if (_desiredLocked || IsDisposed) return;
-        var c = AssurerChat();
-        Rectangle? ancre = _widget is { IsDisposed: false } w ? w.Bounds : null;
-        c.Placer(ancre);
-        c.AfficherAnime();
     }
 
     private async Task<ResultatAction> EnvoyerMessageClientAsync(string texte)
@@ -454,17 +436,12 @@ public class ClientWindow : Form
     {
         if (!_arretEnCours) { _arretTimer.Stop(); return; }
         _arretRestant--;
-        if (_arretRestant > 0)
-        {
-            Poster(new { type = "arret", restant = _arretRestant });
-            return;
-        }
+        if (_arretRestant > 0) { Poster(new { type = "arret", restant = _arretRestant }); return; }
         _arretTimer.Stop();
         _arretEnCours = false;
         Poster(new { type = "arret", restant = 0 });
         var ok = false;
-        try { ok = ExtinctionHandler?.Invoke() ?? false; }
-        catch { }
+        try { ok = ExtinctionHandler?.Invoke() ?? false; } catch { }
         if (!ok) Poster(new { type = "arret", restant = -2 });
     }
 
@@ -487,13 +464,8 @@ public class ClientWindow : Form
                 await _web.EnsureCoreWebView2Async(env);
 
                 var s = _web.CoreWebView2.Settings;
-                s.AreDefaultContextMenusEnabled = false;
-                s.AreDevToolsEnabled = _devMode;
-                s.AreBrowserAcceleratorKeysEnabled = false;
-                s.IsZoomControlEnabled = false;
-                s.IsStatusBarEnabled = false;
-                s.IsPasswordAutosaveEnabled = false;
-                s.IsGeneralAutofillEnabled = false;
+                s.AreDefaultContextMenusEnabled = false; s.AreDevToolsEnabled = _devMode; s.AreBrowserAcceleratorKeysEnabled = false;
+                s.IsZoomControlEnabled = false; s.IsStatusBarEnabled = false; s.IsPasswordAutosaveEnabled = false; s.IsGeneralAutofillEnabled = false;
 
                 _web.CoreWebView2.NewWindowRequested += (_, a) => a.Handled = true;
                 _web.CoreWebView2.NavigationStarting += (_, a) => { if (a.IsUserInitiated) a.Cancel = true; };
@@ -504,8 +476,8 @@ public class ClientWindow : Form
                     _webReady = true;
                     _attente.Visible = false;
                     PousserInfos();
-                    foreach (var m in _historique)
-                        Poster(new { type = "message", moi = m.DeMoi, texte = m.Texte, heure = m.Heure });
+                    PousserBranding();
+                    foreach (var m in _historique) Poster(new { type = "message", moi = m.DeMoi, texte = m.Texte, heure = m.Heure });
                     if (_arretEnCours) Poster(new { type = "arret", restant = _arretRestant });
                     if (_desiredLocked) _web.Focus();
                 };
@@ -521,15 +493,13 @@ public class ClientWindow : Form
         }
     }
 
-    private void PousserInfos() =>
-        Poster(new { type = "infos", poste = _poste, ip = _ip, etat = _etat, bandeau = _messageVerrou });
+    private void PousserInfos() => Poster(new { type = "infos", poste = _poste, ip = _ip, etat = _etat, bandeau = _messageVerrou });
 
     private void Poster(object donnees)
     {
         try
         {
-            if (_webReady && _web.CoreWebView2 != null)
-                _web.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(donnees));
+            if (_webReady && _web.CoreWebView2 != null) _web.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(donnees));
         }
         catch { }
     }
@@ -543,16 +513,11 @@ public class ClientWindow : Form
         if (message == "annuler_arret") { AnnulerArret(); return; }
         if (message.StartsWith("msg:", StringComparison.Ordinal)) await EnvoyerDepuisVerrouAsync(message[4..]);
         
-        if (message == "reprendre" && SuspendreHandler != null) 
-        { 
-            await SuspendreHandler(); 
-            return; 
-        }
+        if (message == "reprendre" && SuspendreHandler != null) { await SuspendreHandler(); return; }
         if (message == "quitter" && QuitterHandler != null)
         {
             var r = await QuitterHandler();
-            if (r.Succes && r.Montant is > 0)
-                MessageBox.Show($"Montant à payer : {SessionWidget.FormaterAr(r.Montant.Value)}", "Session terminée");
+            if (r.Succes && r.Montant is > 0) MessageBox.Show($"Montant à payer : {SessionWidget.FormaterAr(r.Montant.Value)}", "Session terminée");
             return;
         }
     }
@@ -564,10 +529,7 @@ public class ClientWindow : Form
             var r = await EnvoyerMessageClientAsync(texte);
             Poster(new { type = "message_statut", ok = r.Succes, erreur = r.Succes ? "" : r.Message });
         }
-        catch
-        {
-            Poster(new { type = "message_statut", ok = false, erreur = "Erreur inattendue." });
-        }
+        catch { Poster(new { type = "message_statut", ok = false, erreur = "Erreur inattendue." }); }
     }
 
     private async Task ActiverAsync()
@@ -580,21 +542,10 @@ public class ClientWindow : Form
             var handler = ActivationHandler;
             var res = handler == null ? ActivationResult.Echec("L'agent n'est pas prêt.") : await handler();
 
-            if (res.Succes)
-            {
-                Poster(new { type = "activation", statut = "ok", message = res.Message });
-                await Task.Delay(700);
-                UnlockScreen();
-            }
-            else
-            {
-                Poster(new { type = "activation", statut = "erreur", message = res.Message });
-            }
+            if (res.Succes) { Poster(new { type = "activation", statut = "ok", message = res.Message }); await Task.Delay(700); UnlockScreen(); }
+            else Poster(new { type = "activation", statut = "erreur", message = res.Message });
         }
-        catch
-        {
-            Poster(new { type = "activation", statut = "erreur", message = "Erreur inattendue." });
-        }
+        catch { Poster(new { type = "activation", statut = "erreur", message = "Erreur inattendue." }); }
         finally { _activationEnCours = false; }
     }
 
@@ -621,9 +572,7 @@ public class ClientWindow : Form
                 var alt = (flags & 0x20) != 0;
                 var ctrl = (GetAsyncKeyState(0x11) & 0x8000) != 0;
 
-                var bloquer = vk is 0x5B or 0x5C or 0x5D 
-                    || (alt && vk is (0x09 or 0x1B or 0x73 or 0x20)) 
-                    || (ctrl && vk == 0x1B);
+                var bloquer = vk is 0x5B or 0x5C or 0x5D || (alt && vk is (0x09 or 0x1B or 0x73 or 0x20)) || (ctrl && vk == 0x1B);
                 if (bloquer) return (IntPtr)1;
             }
         }

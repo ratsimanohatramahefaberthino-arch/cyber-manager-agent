@@ -1,6 +1,9 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
+/// <summary>Identité visuelle du cyber telle qu'affichée par l'agent.</summary>
+public record BrandingData(string Nom, string Slogan, string Couleur, byte[]? Logo);
+
 public class AgentConfig
 {
     [JsonPropertyName("server_url")]
@@ -15,6 +18,19 @@ public class AgentConfig
     [JsonPropertyName("agent_token")]
     public string AgentToken { get; set; } = "";
 
+    // --- Identité du cyber (mise en cache pour fonctionner serveur éteint) ---
+    [JsonPropertyName("nom_cyber")]
+    public string NomCyber { get; set; } = "";
+
+    [JsonPropertyName("slogan")]
+    public string Slogan { get; set; } = "";
+
+    [JsonPropertyName("couleur")]
+    public string Couleur { get; set; } = "";
+
+    [JsonPropertyName("logo_version")]
+    public string LogoVersion { get; set; } = "";
+
     [JsonIgnore]
     public static string ConfigPath
     {
@@ -27,6 +43,10 @@ public class AgentConfig
             return Path.Combine(dir, "agent-config.json");
         }
     }
+
+    /// <summary>Fichier local où est conservé le dernier logo téléchargé.</summary>
+    [JsonIgnore]
+    public static string LogoPath => Path.Combine(Path.GetDirectoryName(ConfigPath)!, "logo-cyber.bin");
 
     public static AgentConfig LoadOrCreate()
     {
@@ -61,5 +81,24 @@ public class AgentConfig
     {
         var options = new JsonSerializerOptions { WriteIndented = true };
         File.WriteAllText(ConfigPath, JsonSerializer.Serialize(this, options));
+    }
+
+    /// <summary>Identité à afficher (valeurs par défaut si le serveur n'a jamais répondu).</summary>
+    public BrandingData ToBranding()
+    {
+        byte[]? logo = null;
+        try
+        {
+            if (!string.IsNullOrEmpty(LogoVersion) && File.Exists(LogoPath))
+                logo = File.ReadAllBytes(LogoPath);
+        }
+        catch { }
+
+        var jamaisSynchronise = string.IsNullOrWhiteSpace(NomCyber);
+        return new BrandingData(
+            jamaisSynchronise ? "Cyber Manager" : NomCyber,
+            jamaisSynchronise ? "Gestion de cybercafé" : Slogan,
+            string.IsNullOrWhiteSpace(Couleur) ? "#7c3aed" : Couleur,
+            logo);
     }
 }
