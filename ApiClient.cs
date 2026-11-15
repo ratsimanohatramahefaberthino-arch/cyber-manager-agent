@@ -17,11 +17,17 @@ public record ActivationResult(bool Succes, string Message, string? Avertissemen
 /// <summary>Résultat d'une action de session demandée depuis le widget (suspendre / quitter).</summary>
 public record ResultatAction(bool Succes, string Message, int? Montant = null);
 
+/// <summary>
+/// Résultat du handshake. Code : « code_installation_invalide » (code absent ou faux),
+/// « identifiant_a_regenerer » (ordinateur dupliqué), ou null.
+/// </summary>
+public record HandshakeResultat(ApiStatut Statut, string? Code = null, string? Message = null);
+
 public record InfosReseau(string Ip, string Mac);
 
 public class ApiClient
 {
-    public const string Version = "1.2.0";
+    public const string Version = "1.3.0";
 
     private readonly HttpClient _http;
     private readonly AgentConfig _config;
@@ -47,7 +53,7 @@ public class ApiClient
         }
     }
 
-    public async Task<ApiStatut> HandshakeAsync()
+    public async Task<HandshakeResultat> HandshakeAsync()
     {
         var net = Reseau;
         var payload = new
@@ -56,11 +62,13 @@ public class ApiClient
             nom_poste = _config.NomPoste,
             adresse_ip = net.Ip,
             adresse_mac = net.Mac,
-            agent_version = Version
+            agent_version = Version,
+            code_installation = _config.CodeInstallation
         };
 
         var (statut, corps) = await EnvoyerAsync(HttpMethod.Post, "/api/agent/handshake", payload, avecToken: false);
-        if (statut != ApiStatut.Ok) return statut;
+        if (statut != ApiStatut.Ok)
+            return new HandshakeResultat(statut, LireChamp(corps, "code"), LireChamp(corps, "message"));
 
         try
         {
@@ -69,7 +77,7 @@ public class ApiClient
             var token = root.TryGetProperty("agent_token", out var t) ? t.GetString() : null;
             var nom = root.TryGetProperty("nom_poste", out var n) ? n.GetString() : null;
 
-            if (string.IsNullOrEmpty(token)) return ApiStatut.Erreur;
+            if (string.IsNullOrEmpty(token)) return new HandshakeResultat(ApiStatut.Erreur);
 
             var modifie = token != _config.AgentToken;
             _config.AgentToken = token;
@@ -79,9 +87,9 @@ public class ApiClient
                 modifie = true;
             }
             if (modifie) _config.Save();
-            return ApiStatut.Ok;
+            return new HandshakeResultat(ApiStatut.Ok);
         }
-        catch { return ApiStatut.Erreur; }
+        catch { return new HandshakeResultat(ApiStatut.Erreur); }
     }
 
     public async Task<ApiReponse<HeartbeatResponse>> SendHeartbeatAsync()

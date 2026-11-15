@@ -18,6 +18,10 @@ public class AgentConfig
     [JsonPropertyName("agent_token")]
     public string AgentToken { get; set; } = "";
 
+    /// <summary>Code d'installation donné par le gérant (page « Enregistrement » du serveur). Sert uniquement à enregistrer un NOUVEAU poste.</summary>
+    [JsonPropertyName("code_installation")]
+    public string CodeInstallation { get; set; } = "";
+
     // --- Identité du cyber (mise en cache pour fonctionner serveur éteint) ---
     [JsonPropertyName("nom_cyber")]
     public string NomCyber { get; set; } = "";
@@ -81,6 +85,17 @@ public class AgentConfig
     {
         var options = new JsonSerializerOptions { WriteIndented = true };
         File.WriteAllText(ConfigPath, JsonSerializer.Serialize(this, options));
+    }
+
+    /// <summary>
+    /// Nouvelle identité : appelée quand le serveur détecte que cet ordinateur est un doublon (disque cloné).
+    /// Le jeton est effacé ; le poste se réenregistrera comme un nouveau poste.
+    /// </summary>
+    public void RegenererIdentifiant()
+    {
+        IdentifiantUnique = Guid.NewGuid().ToString();
+        AgentToken = "";
+        Save();
     }
 
     /// <summary>Identité à afficher (valeurs par défaut si le serveur n'a jamais répondu).</summary>

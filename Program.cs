@@ -2,6 +2,7 @@
 //  Cyber Manager Agent — point d'entrée
 //  Options :  --server=http://IP:PORT   (mémorisée dans la config)
 //             --nom="POSTE 3"           (nom proposé à l'enregistrement)
+//             --code=XXXX-XXXX          (code d'installation, page « Enregistrement » du serveur)
 //  Variable : AGENT_DEV=1  → mode développement (fenêtre normale, pas de blocage clavier)
 // ============================================================================
 
@@ -86,6 +87,13 @@ try
         {
             var nom = arg[6..].Trim();
             if (nom.Length is > 0 and <= 100) { config.NomPoste = nom; config.Save(); }
+        }
+        else if (arg.StartsWith("--code=", StringComparison.OrdinalIgnoreCase))
+        {
+            // Le code n'est jamais écrit dans le journal
+            var code = arg[7..].Trim();
+            if (code.Length is > 0 and <= 32) { config.CodeInstallation = code; config.Save(); }
+            else Log("Option --code ignorée (longueur invalide).");
         }
     }
 
@@ -284,19 +292,37 @@ try
             {
                 if (string.IsNullOrEmpty(config.AgentToken))
                 {
-                    var st = await api.HandshakeAsync();
-                    if (st == ApiStatut.Ok)
+                    var hs = await api.HandshakeAsync();
+                    if (hs.Statut == ApiStatut.Ok)
                     {
                         Log($"Handshake OK (poste '{config.NomPoste}').");
                         echecs = 0;
                         delai = 300;
                     }
+                    else if (hs.Code == "identifiant_a_regenerer")
+                    {
+                        // Le serveur a détecté que cet ordinateur est un doublon (disque cloné) : nouvelle identité
+                        Log("Cet ordinateur est un doublon d'un autre poste : nouvelle identité générée, réenregistrement.");
+                        config.RegenererIdentifiant();
+                        DefinirServeur(true);
+                        echecs = 0;
+                        delai = 300;
+                    }
+                    else if (hs.Code == "code_installation_invalide")
+                    {
+                        // Le serveur répond, mais refuse l'enregistrement : l'écran affichera « Poste indisponible »
+                        DefinirServeur(true);
+                        etatServeur = "enregistrement_refuse";
+                        echecs++;
+                        delai = 30_000;
+                        Log("Enregistrement refusé : code d'installation absent ou invalide. Relancez l'agent avec l'option --code=XXXX-XXXX (code affiché dans la page « Enregistrement » du serveur).");
+                    }
                     else
                     {
                         echecs++;
-                        DefinirServeur(false);
+                        if (hs.Statut == ApiStatut.Injoignable) DefinirServeur(false);
                         delai = Backoff(echecs);
-                        Log($"Handshake échoué ({st}). Nouvel essai dans {delai / 1000}s.");
+                        Log($"Handshake échoué ({hs.Statut}{(string.IsNullOrWhiteSpace(hs.Message) ? "" : " : " + hs.Message)}). Nouvel essai dans {delai / 1000}s.");
                     }
                 }
                 else
