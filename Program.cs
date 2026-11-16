@@ -1,8 +1,6 @@
 // ============================================================================
-//  Cyber Manager Agent — point d'entrée
-//  Options :  --server=http://IP:PORT   (mémorisée dans la config)
-//             --nom="POSTE 3"           (nom proposé à l'enregistrement)
-//             --code=XXXX-XXXX          (code d'installation, page « Enregistrement » du serveur)
+//  Cyber Manager Écran — fenêtre de verrouillage, widget, notifications.
+//  Lancé et relancé par le Gardien dans la session du client. Aucun secret ici.
 //  Variable : AGENT_DEV=1  → mode développement (fenêtre normale, pas de blocage clavier)
 // ============================================================================
 
@@ -10,9 +8,9 @@
 using var mutexUnique = new Mutex(true, @"Global\CyberManagerAgent", out var premiereInstance);
 if (!premiereInstance) return;
 
-// --- Journal (dans le dossier de données, jamais le token) -----------------
+// --- Journal (dossier de l'utilisateur, jamais de secret) -------------------
 var dossierDonnees = Path.GetDirectoryName(AgentConfig.ConfigPath)!;
-var logPath = Path.Combine(dossierDonnees, "agent.log");
+var logPath = Path.Combine(dossierDonnees, "ecran.log");
 var logVerrou = new object();
 
 try
@@ -31,8 +29,6 @@ void Log(string msg)
         try { File.AppendAllText(logPath, ligne + Environment.NewLine); } catch { }
     }
 }
-
-static int Backoff(int echecs) => Math.Min(30_000, 2_000 << Math.Min(echecs, 4));   // 4s, 8s, 16s, 30s…
 
 // Lecture d'un champ du payload JSON d'une commande (jamais journalisé)
 static string? LireTexte(string? json, string champ)
@@ -60,49 +56,15 @@ static int? LireEntier(string? json, string champ)
 }
 
 const int DelaiArretSecondes = 5;
-const string ArgsExtinction = "/s /t 0";   // ajouter /f pour forcer la fermeture des applications bloquantes
 
 var devMode = Environment.GetEnvironmentVariable("AGENT_DEV") == "1";
 
 try
 {
-    Log($">>> Démarrage de l'agent Cyber Manager {ApiClient.Version} — mode {(devMode ? "DEV" : "PRODUCTION")}");
-
-    // --- Configuration + options en ligne de commande ----------------------
-    var config = AgentConfig.LoadOrCreate();
-
-    foreach (var arg in args)
-    {
-        if (arg.StartsWith("--server=", StringComparison.OrdinalIgnoreCase))
-        {
-            var url = arg[9..].Trim().TrimEnd('/');
-            if (Uri.TryCreate(url, UriKind.Absolute, out var u) && (u.Scheme is "http" or "https"))
-            {
-                config.ServerUrl = url;
-                config.Save();
-            }
-            else Log($"Option --server ignorée (URL invalide) : {url}");
-        }
-        else if (arg.StartsWith("--nom=", StringComparison.OrdinalIgnoreCase))
-        {
-            var nom = arg[6..].Trim();
-            if (nom.Length is > 0 and <= 100) { config.NomPoste = nom; config.Save(); }
-        }
-        else if (arg.StartsWith("--code=", StringComparison.OrdinalIgnoreCase))
-        {
-            // Le code n'est jamais écrit dans le journal
-            var code = arg[7..].Trim();
-            if (code.Length is > 0 and <= 32) { config.CodeInstallation = code; config.Save(); }
-            else Log("Option --code ignorée (longueur invalide).");
-        }
-    }
-
-    Log($"Config : poste='{config.NomPoste}', serveur='{config.ServerUrl}', id='{config.IdentifiantUnique[..8]}…'");
+    Log($">>> Démarrage de l'Écran Cyber Manager {ApiClient.Version} — mode {(devMode ? "DEV" : "PRODUCTION")}");
     Log($"Dossier de données : {dossierDonnees}");
 
-    var api = new ApiClient(config);
-
-// --- Thread UI (WinForms STA) instrumenté pour diagnostic précis ------
+    // --- Thread UI (WinForms STA) instrumenté pour diagnostic précis ------
     var fenetrePrete = new ManualResetEventSlim(false);
     var uiThread = new Thread(() =>
     {
@@ -139,278 +101,97 @@ try
         return;
     }
     var fenetreUi = ClientWindow.Instance;
-    Log("Fenêtre prête. Démarrage de la communication avec le serveur.");
+    Log("Fenêtre prête. Connexion au Gardien.");
 
-    // Heartbeat immédiat demandé (recharge, désactivation, fin de forfait…)
-    var reveil = 0;
-    void Reveiller() => Volatile.Write(ref reveil, 1);
-    fenetreUi.ReveillerHeartbeat = Reveiller;
+    // --- Liaison avec le Gardien ---------------------------------------------
+    var gardien = new ApiClient(Log);
 
-    // État partagé entre les boucles
-    var serveurOk = false;
+    // État partagé (alimenté par le Gardien)
+    var poste = "";
+    var ip = "";
     var etatServeur = "serveur_injoignable";
 
-    // Clic sur ACTIVER → appel serveur
-    fenetreUi.ActivationHandler = async () =>
-    {
-        Log("Activation demandée par le client…");
-        var r = await api.ActiverAsync();
-        Log(r.Succes
-            ? $"Activation OK{(r.Avertissement != null ? " (avertissement : " + r.Avertissement + ")" : "")}"
-            : $"Activation refusée : {r.Message}");
-        return r;
-    };
+    void PousserInfos() => fenetreUi.MettreAJourInfos(poste, ip, etatServeur);
 
-    // Widget : Suspendre / Quitter → appel serveur
+    // Heartbeat immédiat demandé (recharge, désactivation, fin de forfait…)
+    void Reveiller() => gardien.Envoyer(new MessageCanal { Type = "reveil" });
+    fenetreUi.ReveillerHeartbeat = Reveiller;
+
+    // Clic sur ACTIVER → Gardien → serveur
+    fenetreUi.ActivationHandler = () => gardien.ActiverAsync();
+
+    // Widget : Suspendre / Reprendre / Quitter → Gardien → serveur
     fenetreUi.SuspendreHandler = async () =>
     {
-        Log("Suspension/Reprise demandée…");
-        // On regarde si le poste est actuellement suspendu pour savoir s'il faut reprendre
-        // (Le client n'a que le bouton Reprendre quand il est suspendu)
-        if (etatServeur == "suspendu") {
-            var r = await api.ReprendreSessionAsync(); // À ajouter dans ApiClient.cs
-            Log(r.Succes ? "Reprise OK" : $"Reprise refusée : {r.Message}");
-            return r;
-        } else {
-            var r = await api.SuspendreSessionAsync();
-            Log(r.Succes ? "Suspension OK" : $"Suspension refusée : {r.Message}");
-            return r;
-        }
+        // Le client n'a que le bouton Reprendre quand le poste est suspendu
+        if (etatServeur == "suspendu") return await gardien.ReprendreSessionAsync();
+        return await gardien.SuspendreSessionAsync();
     };
 
-    fenetreUi.QuitterHandler = async () =>
-    {
-        Log("Fermeture de session demandée…");
-        var r = await api.FermerSessionAsync();
-        Log(r.Succes ? "Fermeture OK" : $"Fermeture refusée : {r.Message}");
-        return r;
-    };
+    fenetreUi.QuitterHandler = () => gardien.FermerSessionAsync();
 
     // Chat client → accueil
-    fenetreUi.MessageHandler = async texte =>
-    {
-        var r = await api.EnvoyerMessageAsync(texte);
-        Log(r.Succes
-            ? $"Message envoyé à l'accueil ({texte.Length} caractères)."
-            : $"Message non envoyé : {r.Message}");
-        return r;
-    };
+    fenetreUi.MessageHandler = texte => gardien.EnvoyerMessageAsync(texte);
 
-    // Extinction réelle de Windows (appelée après le décompte, si non annulé)
+    // Fin du décompte : c'est le Gardien qui éteint réellement Windows (et seulement si le serveur l'a demandé)
     fenetreUi.ExtinctionHandler = () =>
     {
-        try
+        Log("Décompte terminé : demande d'extinction envoyée au Gardien.");
+        return gardien.Envoyer(new MessageCanal { Type = "extinction" });
+    };
+
+    // Affichage immédiat avec l'identité par défaut ; le Gardien envoie la vraie dès la connexion
+    fenetreUi.MettreAJourBranding(AgentConfig.BrandingParDefaut);
+    PousserInfos();
+
+    // --- Messages du Gardien ---------------------------------------------------
+    gardien.Connecte += () => { /* le Gardien répond en poussant branding + état */ };
+
+    gardien.Deconnecte += () =>
+    {
+        etatServeur = "serveur_injoignable";
+        PousserInfos();
+    };
+
+    gardien.MessageRecu += m =>
+    {
+        switch (m.Type)
         {
-            Log($"Extinction du poste : shutdown {ArgsExtinction}");
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("shutdown", ArgsExtinction)
+            case "etat":
+                poste = m.Poste ?? poste;
+                ip = m.Ip ?? ip;
+                etatServeur = m.Etat ?? "serveur_injoignable";
+                PousserInfos();
+                // Verrou absent = serveur injoignable : on garde l'état courant (mode dégradé)
+                if (m.Verrou is bool doitEtreVerrouille)
+                {
+                    fenetreUi.MettreAJourSession(m.Session);
+                    fenetreUi.SyncFromServer(doitEtreVerrouille);
+                }
+                break;
+
+            case "branding":
+                fenetreUi.MettreAJourBranding(AgentConfig.DepuisMessage(m));
+                break;
+
+            case "cmd":
             {
-                CreateNoWindow = true,
-                UseShellExecute = false
-            });
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Log($"Extinction impossible : {ex.Message}");
-            return false;
+                var (ok, detail) = Executer(m.Commande ?? "", m.Payload, fenetreUi);
+                gardien.Envoyer(new MessageCanal { Type = "repcmd", Id = m.Id, Succes = ok, Message = detail });
+                break;
+            }
         }
     };
 
+    _ = Task.Run(gardien.BoucleAsync);
 
-
-    void PousserInfos() =>
-        fenetreUi.MettreAJourInfos(config.NomPoste, api.Reseau.Ip, serveurOk ? etatServeur : "serveur_injoignable");
-
-    void DefinirServeur(bool ok)
+    // Exécution d'une commande reçue du serveur (via le Gardien)
+    (bool ok, string detail) Executer(string type, string? payload, ClientWindow fenetre)
     {
-        if (ok != serveurOk)
-        {
-            serveurOk = ok;
-            Log(ok ? "Serveur joignable." : "Serveur injoignable — nouvelles tentatives avec délai croissant.");
-        }
-    }
-
-    PousserInfos();
-
-        // --- Identité du cyber (nom, slogan, couleur, logo) ---------------------
-    // Affichage immédiat avec ce qui est en cache local, puis mise à jour via le heartbeat.
-    fenetreUi.MettreAJourBranding(config.ToBranding());
-
-    var brandingOccupe = false;
-    async Task AppliquerBrandingAsync(BrandingInfo? b)
-    {
-        if (b == null || brandingOccupe) return;
-        brandingOccupe = true;
+        Log($"Commande reçue : {type}");
         try
         {
-            var nom = string.IsNullOrWhiteSpace(b.NomCyber) ? "Cyber Manager" : b.NomCyber.Trim();
-            var slogan = b.Slogan ?? "";
-            var couleur = string.IsNullOrWhiteSpace(b.Couleur) ? "#7c3aed" : b.Couleur;
-            var version = b.AvecLogo ? (b.LogoVersion ?? "") : "";
-
-            var texteChange = nom != config.NomCyber || slogan != config.Slogan || couleur != config.Couleur;
-            var logoChange = version != config.LogoVersion;
-            if (!texteChange && !logoChange) return;
-
-            if (logoChange)
-            {
-                if (version == "")
-                {
-                    try { File.Delete(AgentConfig.LogoPath); } catch { }
-                    config.LogoVersion = "";
-                }
-                else
-                {
-                    var octets = await api.TelechargerLogoAsync();
-                    if (octets == null) return;   // on réessaiera au prochain heartbeat
-                    await File.WriteAllBytesAsync(AgentConfig.LogoPath, octets);
-                    config.LogoVersion = version;
-                }
-            }
-
-            config.NomCyber = nom;
-            config.Slogan = slogan;
-            config.Couleur = couleur;
-            config.Save();
-
-            fenetreUi.MettreAJourBranding(config.ToBranding());
-            Log($"Identité du cyber mise à jour : '{nom}'{(version != "" ? " (avec logo)" : " (sans logo)")}.");
-        }
-        catch (Exception ex) { Log($"Identité du cyber : erreur ({ex.Message})."); }
-        finally { brandingOccupe = false; }
-    }
-
-    // --- Boucle Heartbeat + handshake (5 s, backoff si panne) --------------
-    _ = Task.Run(async () =>
-    {
-        await Task.Delay(2000);
-        var echecs = 0;
-        while (true)
-        {
-            var delai = 5_000;
-            try
-            {
-                if (string.IsNullOrEmpty(config.AgentToken))
-                {
-                    var hs = await api.HandshakeAsync();
-                    if (hs.Statut == ApiStatut.Ok)
-                    {
-                        Log($"Handshake OK (poste '{config.NomPoste}').");
-                        echecs = 0;
-                        delai = 300;
-                    }
-                    else if (hs.Code == "identifiant_a_regenerer")
-                    {
-                        // Le serveur a détecté que cet ordinateur est un doublon (disque cloné) : nouvelle identité
-                        Log("Cet ordinateur est un doublon d'un autre poste : nouvelle identité générée, réenregistrement.");
-                        config.RegenererIdentifiant();
-                        DefinirServeur(true);
-                        echecs = 0;
-                        delai = 300;
-                    }
-                    else if (hs.Code == "code_installation_invalide")
-                    {
-                        // Le serveur répond, mais refuse l'enregistrement : l'écran affichera « Poste indisponible »
-                        DefinirServeur(true);
-                        etatServeur = "enregistrement_refuse";
-                        echecs++;
-                        delai = 30_000;
-                        Log("Enregistrement refusé : code d'installation absent ou invalide. Relancez l'agent avec l'option --code=XXXX-XXXX (code affiché dans la page « Enregistrement » du serveur).");
-                    }
-                    else
-                    {
-                        echecs++;
-                        if (hs.Statut == ApiStatut.Injoignable) DefinirServeur(false);
-                        delai = Backoff(echecs);
-                        Log($"Handshake échoué ({hs.Statut}{(string.IsNullOrWhiteSpace(hs.Message) ? "" : " : " + hs.Message)}). Nouvel essai dans {delai / 1000}s.");
-                    }
-                }
-                else
-                {
-                    var r = await api.SendHeartbeatAsync();
-                    switch (r.Statut)
-                    {
-                        case ApiStatut.Ok:
-                            echecs = 0;
-                            DefinirServeur(true);
-                            etatServeur = r.Donnees!.Etat ?? "disponible";
-
-                            if (!string.IsNullOrWhiteSpace(r.Donnees.NomPoste) && r.Donnees.NomPoste != config.NomPoste)
-                            {
-                                config.NomPoste = r.Donnees.NomPoste;
-                                config.Save();
-                            }
-                            fenetreUi.MettreAJourSession(r.Donnees.Session);
-                            fenetreUi.SyncFromServer(r.Donnees.DoitEtreVerrouille);
-                            await AppliquerBrandingAsync(r.Donnees.Branding);
-                            break;
-
-                        case ApiStatut.NonAutorise:
-                            Log("Token refusé par le serveur : nouveau handshake.");
-                            config.AgentToken = "";
-                            delai = 200;
-                            break;
-
-                        default:   // injoignable ou erreur serveur : on garde l'état courant (mode dégradé)
-                            echecs++;
-                            DefinirServeur(false);
-                            delai = Backoff(echecs);
-                            break;
-                    }
-                }
-                PousserInfos();
-            }
-            catch (Exception ex) { Log($"Heartbeat : erreur inattendue : {ex.Message}"); }
-
-            // Attente par tranches : un réveil (recharge, désactivation…) déclenche un heartbeat immédiat
-            for (var attente = 0; attente < delai && Volatile.Read(ref reveil) == 0; attente += 250)
-                await Task.Delay(250);
-            Interlocked.Exchange(ref reveil, 0);
-        }
-    });
-
-    // --- Boucle Commandes (3 s, backoff si panne) ---------------------------
-    _ = Task.Run(async () =>
-    {
-        await Task.Delay(3_000);
-        var echecs = 0;
-        while (true)
-        {
-            var delai = 3_000;
-            try
-            {
-                if (!string.IsNullOrEmpty(config.AgentToken))
-                {
-                    var r = await api.GetCommandsAsync();
-                    if (r.Statut == ApiStatut.Ok)
-                    {
-                        echecs = 0;
-                        foreach (var cmd in r.Donnees!)
-                        {
-                            Log($"Commande reçue : {cmd.Type} (id={cmd.Id})");
-                            var (ok, detail) = Executer(cmd, fenetreUi);
-                            await api.ConfirmerCommandeAsync(cmd.Id, ok, detail);
-                        }
-                    }
-                    else if (r.Statut != ApiStatut.NonAutorise)
-                    {
-                        echecs++;
-                        delai = Backoff(echecs);
-                    }
-                }
-            }
-            catch (Exception ex) { Log($"Commandes : erreur inattendue : {ex.Message}"); }
-
-            await Task.Delay(delai);
-        }
-    });
-
-    // Exécution d'une commande reçue du serveur
-    (bool ok, string detail) Executer(AgentCommand cmd, ClientWindow fenetre)
-    {
-        try
-        {
-            switch (cmd.Type)
+            switch (type)
             {
                 case "demarrer":
                 case "debloquer":
@@ -438,7 +219,7 @@ try
 
                 case "recharger":
                 {
-                    var minutes = LireEntier(cmd.Payload, "minutes_ajoutees");
+                    var minutes = LireEntier(payload, "minutes_ajoutees");
                     fenetre.NotifierRecharge(minutes);
                     Reveiller();   // le widget se recale tout de suite sur le temps du serveur
                     return (true, "Temps ajouté");
@@ -446,19 +227,19 @@ try
 
                 case "message":
                 {
-                    var texte = LireTexte(cmd.Payload, "message");
+                    var texte = LireTexte(payload, "message");
                     if (string.IsNullOrWhiteSpace(texte)) return (false, "Message vide");
                     fenetre.RecevoirMessage(texte.Trim());
                     return (true, "Message affiché");
                 }
 
                 default:
-                    return (false, $"Commande inconnue : {cmd.Type}");
+                    return (false, $"Commande inconnue : {type}");
             }
         }
         catch (Exception ex)
         {
-            Log($"Exécution de '{cmd.Type}' échouée : {ex.Message}");
+            Log($"Exécution de '{type}' échouée : {ex.Message}");
             return (false, "Erreur d'exécution");
         }
     }
