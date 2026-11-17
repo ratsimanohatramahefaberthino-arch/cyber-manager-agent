@@ -4,6 +4,8 @@
 //  Variable : AGENT_DEV=1  → mode développement (fenêtre normale, pas de blocage clavier)
 // ============================================================================
 
+using CyberManager.Agent;
+
 // --- Instance unique -------------------------------------------------------
 using var mutexUnique = new Mutex(true, @"Global\CyberManagerAgent", out var premiereInstance);
 if (!premiereInstance) return;
@@ -113,6 +115,29 @@ try
 
     void PousserInfos() => fenetreUi.MettreAJourInfos(poste, ip, etatServeur);
 
+    // --- Surveillance de la liaison avec le serveur ----------------------------
+    // Grâce de 15 s (< tolérance du serveur : Poste::DELAI_HORS_LIGNE = 30 s). Au-delà : poste verrouillé,
+    // usage gratuit impossible. Reprise automatique : le prochain état frais du Gardien déverrouille.
+    using var liaison = new SurveillanceLiaison();
+    liaison.EtatChange += (etat, message) =>
+    {
+        Log($"Liaison avec le serveur : {etat} — {message}");
+        switch (etat)
+        {
+            case EtatLiaison.CableDebranche:
+                etatServeur = "cable_debranche";
+                PousserInfos();
+                fenetreUi.LockScreen();
+                break;
+            case EtatLiaison.ServeurInjoignable:
+                etatServeur = "serveur_injoignable";
+                PousserInfos();
+                fenetreUi.LockScreen();
+                break;
+        }
+    };
+    liaison.Demarrer();
+
     // Heartbeat immédiat demandé (recharge, désactivation, fin de forfait…)
     void Reveiller() => gardien.Envoyer(new MessageCanal { Type = "reveil" });
     fenetreUi.ReveillerHeartbeat = Reveiller;
@@ -149,7 +174,7 @@ try
 
     gardien.Deconnecte += () =>
     {
-        etatServeur = "serveur_injoignable";
+        etatServeur = liaison.Etat == EtatLiaison.CableDebranche ? "cable_debranche" : "serveur_injoignable";
         PousserInfos();
     };
 
@@ -161,10 +186,13 @@ try
                 poste = m.Poste ?? poste;
                 ip = m.Ip ?? ip;
                 etatServeur = m.Etat ?? "serveur_injoignable";
+                if (etatServeur == "serveur_injoignable" && liaison.Etat == EtatLiaison.CableDebranche)
+                    etatServeur = "cable_debranche";   // on distingue « câble débranché » de « serveur injoignable »
                 PousserInfos();
                 // Verrou absent = serveur injoignable : on garde l'état courant (mode dégradé)
                 if (m.Verrou is bool doitEtreVerrouille)
                 {
+                    liaison.SignalerSucces();   // donnée fraîche du serveur : la liaison est bonne
                     fenetreUi.MettreAJourSession(m.Session);
                     fenetreUi.SyncFromServer(doitEtreVerrouille);
                 }

@@ -54,7 +54,7 @@ body { font-family:'Segoe UI', system-ui, sans-serif; color:var(--txt);
 #btn-reprendre { background:linear-gradient(135deg,#10b981,#059669); box-shadow:0 12px 34px rgba(16,185,129,.35); }
 #btn-quitter { background:linear-gradient(135deg,#ef4444,#b91c1c); box-shadow:0 12px 34px rgba(239,68,68,.35); width:140px; }
 
-.msg { min-height:22px; text-align:center; font-size:16px; margin-top:20px; color:var(--mut); font-weight:600; }
+.msg { min-height:22px; text-align:center; font-size:16px; margin-top:20px; color:var(--mut); font-weight:600; max-width:80vw; }
 .msg.err { color:#fca5a5; } .msg.ok { color:#86efac; }
 .spin { display:inline-block; width:20px; height:20px; border:3px solid rgba(255,255,255,.3); border-top-color:#fff;
         border-radius:50%; animation:r .8s linear infinite; vertical-align:-4px; margin-right:10px; }
@@ -123,10 +123,14 @@ function appliquerBranding(d) {
 function afficherEtat() {
   const zone = $('zone-actions');
   msg.className = 'msg';
-  
+
+  if (etat === 'cable_debranche') {
+    $('main-titre').textContent = "Câble réseau débranché"; $('main-sous-titre').textContent = "Poste verrouillé";
+    zone.innerHTML = ''; msg.textContent = "Vérifiez le câble réseau (ou le Wi-Fi). Le poste reprendra tout seul dès le retour du réseau."; return;
+  }
   if (etat === 'serveur_injoignable') {
-    $('main-titre').textContent = ""; $('main-sous-titre').textContent = "";
-    zone.innerHTML = ''; msg.textContent = "Le serveur est injoignable. Nouvelle tentative en cours…"; return;
+    $('main-titre').textContent = "Serveur injoignable"; $('main-sous-titre').textContent = "Poste verrouillé";
+    zone.innerHTML = ''; msg.textContent = "Le serveur de la caisse ne répond pas. Le poste reprendra tout seul dès son retour."; return;
   }
   if (etat === 'occupe') {
     $('main-titre').textContent = "Poste en cours d'utilisation"; $('main-sous-titre').textContent = "";
