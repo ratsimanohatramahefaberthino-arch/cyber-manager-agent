@@ -25,6 +25,7 @@ public class SessionWidget : Form
     private readonly Button _btnCacher, _btnSuspendre, _btnQuitter, _btnEnvoyer;
     private readonly RichTextBox _chatBox;
     private readonly TextBox _chatSaisie;
+    private readonly VoyantServeur _voyant;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly NotifyIcon _tray;
 
@@ -71,11 +72,15 @@ public class SessionWidget : Form
         _lblMontant = Etiquette("", 10f, FontStyle.Bold, Texte, 0, 74, 240, 20);
         _lblDebut = Etiquette("", 8f, FontStyle.Regular, Discret, 0, 96, 240, 16);
 
+        // Voyant « Serveur : connecté / injoignable » (visible aussi en mode réduit)
+        _voyant = new VoyantServeur(7.5f) { Bounds = new Rectangle(S(6), S(114), S(228), S(20)) };
+        Controls.Add(_voyant);
+
         _chatBox = new RichTextBox
         {
             ReadOnly = true, BorderStyle = BorderStyle.None, DetectUrls = false, TabStop = false,
             ScrollBars = RichTextBoxScrollBars.Vertical, Font = new Font("Segoe UI", 8f),
-            Bounds = new Rectangle(S(6), S(116), S(228), S(64))
+            Bounds = new Rectangle(S(6), S(138), S(228), S(42))
         };
         _chatBox.BackColor = Color.FromArgb(19, 28, 58);
         _chatBox.ForeColor = Texte;
@@ -120,6 +125,13 @@ public class SessionWidget : Form
         _timer.Start();
 
         Rafraichir();
+    }
+
+    /// <summary>État de la liaison avec le serveur (voyant). « immediat » : pas de délai avant le rouge.</summary>
+    public void DefinirServeur(bool connecte, bool immediat = false)
+    {
+        if (IsDisposed) return;
+        _voyant.Definir(connecte, immediat);
     }
 
     /// <summary>Applique l'identité du cyber (appelé par ClientWindow, une seule fois par changement).</summary>
@@ -317,23 +329,26 @@ public class SessionWidget : Form
         _btnEnvoyer.Visible = !_modeReduit;
 
         _lblMontant.Visible = true;
+        _voyant.Visible = true;   // le voyant reste visible, même réduit
         _btnCacher.Text = _modeReduit ? "Afficher" : "Réduire";
 
         if (_modeReduit)
         {
-            ClientSize = new Size(S(240), S(90));
-            _lblMontant.Bounds = new Rectangle(S(0), S(15), S(240), S(25));
+            ClientSize = new Size(S(240), S(102));
+            _lblMontant.Bounds = new Rectangle(S(0), S(6), S(240), S(24));
             _lblMontant.TextAlign = ContentAlignment.MiddleCenter;
+            _voyant.Bounds = new Rectangle(S(6), S(32), S(228), S(20));
 
-            _btnCacher.Bounds = new Rectangle(S(6), S(45), S(72), S(35));
-            _btnSuspendre.Bounds = new Rectangle(S(82), S(45), S(72), S(35));
-            _btnQuitter.Bounds = new Rectangle(S(158), S(45), S(72), S(35));
+            _btnCacher.Bounds = new Rectangle(S(6), S(58), S(72), S(35));
+            _btnSuspendre.Bounds = new Rectangle(S(82), S(58), S(72), S(35));
+            _btnQuitter.Bounds = new Rectangle(S(158), S(58), S(72), S(35));
         }
         else
         {
             ClientSize = new Size(S(240), S(250));
             _lblMontant.Bounds = new Rectangle(S(0), S(74), S(240), S(20));
             _lblMontant.TextAlign = ContentAlignment.MiddleCenter;
+            _voyant.Bounds = new Rectangle(S(6), S(114), S(228), S(20));
 
             _btnCacher.Bounds = new Rectangle(S(6), S(210), S(72), S(35));
             _btnSuspendre.Bounds = new Rectangle(S(82), S(210), S(72), S(35));

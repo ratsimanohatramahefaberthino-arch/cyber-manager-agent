@@ -26,6 +26,7 @@ public class ClientWindow : Form
     private readonly bool _devMode;
     private readonly WebView2 _web;
     private readonly Label _attente;
+    private readonly VoyantServeur? _voyant;
     private readonly System.Windows.Forms.Timer _garde;
     private readonly System.Windows.Forms.Timer _finTimer;
     private readonly System.Windows.Forms.Timer _arretTimer;
@@ -88,6 +89,13 @@ public class ClientWindow : Form
         Controls.Add(_attente);
         _attente.BringToFront();
 
+        // Voyant « Serveur : connecté / injoignable » : contrôle natif au-dessus du WebView2 (en haut, au centre)
+        var k = Math.Max(1f, DeviceDpi / 96f);
+        _voyant = new VoyantServeur(11f) { Size = new Size((int)Math.Round(270 * k), (int)Math.Round(38 * k)) };
+        Controls.Add(_voyant);
+        _voyant.BringToFront();
+        PlacerVoyant();
+
         _garde = new System.Windows.Forms.Timer { Interval = 1500 };
         _garde.Tick += (_, _) =>
         {
@@ -118,6 +126,28 @@ public class ClientWindow : Form
             _proc = HookCallback;
             _hook = PoserHook(_proc);
         }
+    }
+
+    private void PlacerVoyant()
+    {
+        if (_voyant is null) return;
+        var k = Math.Max(1f, DeviceDpi / 96f);
+        _voyant.Location = new Point(Math.Max(0, (ClientSize.Width - _voyant.Width) / 2), (int)Math.Round(18 * k));
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        PlacerVoyant();
+    }
+
+    /// <summary>Le serveur est joignable tant que le Gardien n'annonce ni « serveur injoignable » ni « câble débranché ».</summary>
+    private bool ServeurJoignable => _etat is not ("serveur_injoignable" or "cable_debranche");
+
+    private void AppliquerVoyant()
+    {
+        _voyant?.Definir(ServeurJoignable);
+        if (_widget is { IsDisposed: false } w) w.DefinirServeur(ServeurJoignable);
     }
 
     public void LockScreen()
@@ -152,10 +182,10 @@ public class ClientWindow : Form
     public void MettreAJourInfos(string poste, string ip, string etat)
     {
         _poste = poste; _ip = ip; _etat = etat;
-        SurUi(PousserInfos);
+        SurUi(() => { PousserInfos(); AppliquerVoyant(); });
     }
 
-        /// <summary>Applique nom, slogan, couleur et logo du cyber (écran de verrouillage, widget, icônes).</summary>
+    /// <summary>Applique nom, slogan, couleur et logo du cyber (écran de verrouillage, widget, icônes).</summary>
     public void MettreAJourBranding(BrandingData b)
     {
         // Mémorisé tout de suite (même si la fenêtre n'a pas encore de handle) : repoussé au chargement de la page.
@@ -320,6 +350,7 @@ public class ClientWindow : Form
             w.ForfaitTermine += SurForfaitTermine;
             foreach(var m in _historique) w.AjouterMessageChat(m);
             w.FormClosed += (_, _) => { if (ReferenceEquals(_widget, w)) _widget = null; };
+            w.DefinirServeur(ServeurJoignable, immediat: true);   // état connu dès l'ouverture : pas de « vérification… »
             _widget = w;
         }
         _widget.MettreAJour(session);
@@ -479,6 +510,7 @@ public class ClientWindow : Form
                     PousserBranding();
                     foreach (var m in _historique) Poster(new { type = "message", moi = m.DeMoi, texte = m.Texte, heure = m.Heure });
                     if (_arretEnCours) Poster(new { type = "arret", restant = _arretRestant });
+                    _voyant?.BringToFront();
                     if (_desiredLocked) _web.Focus();
                 };
 
