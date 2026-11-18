@@ -130,7 +130,11 @@ function afficherEtat() {
   }
   if (etat === 'serveur_injoignable') {
     $('main-titre').textContent = "Serveur injoignable"; $('main-sous-titre').textContent = "Poste verrouillé";
-    zone.innerHTML = ''; msg.textContent = "Le serveur de la caisse ne répond pas. Le poste reprendra tout seul dès son retour."; return;
+    zone.innerHTML = ''; msg.textContent = "Le serveur de la caisse est momentanément injoignable. Veuillez patienter ou appeler le gérant."; return;
+  }
+  if (etat === 'enregistrement_refuse') {
+    $('main-titre').textContent = "Enregistrement refusé"; $('main-sous-titre').textContent = "Poste non enregistré";
+    zone.innerHTML = ''; msg.className = 'msg err'; msg.textContent = "Code d'installation invalide. Vérifiez le code sur le serveur."; return;
   }
   if (etat === 'occupe') {
     $('main-titre').textContent = "Poste en cours d'utilisation"; $('main-sous-titre').textContent = "";
