@@ -25,7 +25,6 @@ public class SessionWidget : Form
     private readonly Button _btnCacher, _btnSuspendre, _btnQuitter, _btnEnvoyer;
     private readonly RichTextBox _chatBox;
     private readonly TextBox _chatSaisie;
-    private readonly VoyantServeur _voyant;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly NotifyIcon _tray;
 
@@ -41,10 +40,8 @@ public class SessionWidget : Form
 
     private bool _modeReduit, _occupe, _positionne, _fermetureAutorisee;
     private bool _alerte5, _finSignalee;
-    private int _ticks;
 
     private static Icon? _iconeApp;
-    
     private static string _nomCyber = "Cyber Manager";
     private static string _couleurHex = "#7c3aed";
     private static byte[]? _logoOctets;
@@ -57,30 +54,26 @@ public class SessionWidget : Form
         Text = _nomCyber;
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
-        ShowInTaskbar = true;                      // icône dans la barre des tâches (clic = ramener le widget)
-        Icon = IconeApp();                         // icône personnalisée (écran violet) au lieu de l'engrenage par défaut
+        ShowInTaskbar = true;
+        Icon = IconeApp();
         MinimizeBox = true;
-        TopMost = false;                           // ne passe jamais devant Word, Chrome, etc.
+        TopMost = false;
         BackColor = Fond;
-        ClientSize = new Size(S(240), S(250));
+        ClientSize = new Size(S(240), S(230));
         DoubleBuffered = true;
         Deplacable(this);
 
         _lblTitre = Etiquette(_nomCyber.ToUpperInvariant(), 8f, FontStyle.Bold, VioletClair, 0, 4, 240, 18);
         _lblCaption = Etiquette("TEMPS ÉCOULÉ", 8f, FontStyle.Bold, Discret, 0, 24, 240, 16);
         _lblTemps = Etiquette("00:00:00", 16f, FontStyle.Bold, Ambre, 0, 42, 240, 30, "Consolas");
-        _lblMontant = Etiquette("", 10f, FontStyle.Bold, Texte, 0, 74, 240, 20);
+        _lblMontant = Etiquette("", 11f, FontStyle.Bold, Texte, 0, 74, 240, 22);
         _lblDebut = Etiquette("", 8f, FontStyle.Regular, Discret, 0, 96, 240, 16);
-
-        // Voyant « Serveur : connecté / injoignable » (visible aussi en mode réduit)
-        _voyant = new VoyantServeur(7.5f) { Bounds = new Rectangle(S(6), S(114), S(228), S(20)) };
-        Controls.Add(_voyant);
 
         _chatBox = new RichTextBox
         {
             ReadOnly = true, BorderStyle = BorderStyle.None, DetectUrls = false, TabStop = false,
             ScrollBars = RichTextBoxScrollBars.Vertical, Font = new Font("Segoe UI", 8f),
-            Bounds = new Rectangle(S(6), S(138), S(228), S(42))
+            Bounds = new Rectangle(S(6), S(116), S(228), S(44))
         };
         _chatBox.BackColor = Color.FromArgb(19, 28, 58);
         _chatBox.ForeColor = Texte;
@@ -91,7 +84,7 @@ public class SessionWidget : Form
         {
             BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(19, 28, 58), ForeColor = Color.White,
             Font = new Font("Segoe UI", 8f), PlaceholderText = "Écrire...",
-            Bounds = new Rectangle(S(6), S(184), S(180), S(22))
+            Bounds = new Rectangle(S(6), S(164), S(180), S(22))
         };
         _chatSaisie.KeyDown += async (_, e) => {
             if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; await EnvoyerChatAsync(); }
@@ -101,7 +94,7 @@ public class SessionWidget : Form
         _btnEnvoyer = new Button
         {
             Text = "➤", FlatStyle = FlatStyle.Flat, BackColor = Violet, ForeColor = Color.White,
-            Font = new Font("Segoe UI", 8f, FontStyle.Bold), Bounds = new Rectangle(S(188), S(184), S(46), S(22)),
+            Font = new Font("Segoe UI", 8f, FontStyle.Bold), Bounds = new Rectangle(S(188), S(164), S(46), S(22)),
             TabStop = false, Cursor = Cursors.Hand, UseVisualStyleBackColor = false
         };
         _btnEnvoyer.FlatAppearance.BorderSize = 0;
@@ -127,23 +120,16 @@ public class SessionWidget : Form
         Rafraichir();
     }
 
-    /// <summary>État de la liaison avec le serveur (voyant). « immediat » : pas de délai avant le rouge.</summary>
-    public void DefinirServeur(bool connecte, bool immediat = false)
-    {
-        if (IsDisposed) return;
-        _voyant.Definir(connecte, immediat);
-    }
+    public void DefinirServeur(bool connecte, bool immediat = false) { }
 
-    /// <summary>Applique l'identité du cyber (appelé par ClientWindow, une seule fois par changement).</summary>
     public static void DefinirBranding(string nom, string couleurHex, byte[]? logo)
     {
         _nomCyber = string.IsNullOrWhiteSpace(nom) ? "Cyber Manager" : nom;
         _couleurHex = string.IsNullOrWhiteSpace(couleurHex) ? "#7c3aed" : couleurHex;
         _logoOctets = logo;
-        _iconeApp = null;   // l'icône sera redessinée au prochain appel
+        _iconeApp = null;
     }
 
-    /// <summary>Met à jour un widget déjà ouvert (titre, icône barre des tâches et zone de notification).</summary>
     public void AppliquerBranding()
     {
         if (IsDisposed) return;
@@ -161,10 +147,6 @@ public class SessionWidget : Form
     private static Color Assombrir(Color c, float f) =>
         Color.FromArgb(c.A, (int)(c.R * f), (int)(c.G * f), (int)(c.B * f));
 
-    /// <summary>
-    /// Icône de l'application : le logo du cyber (sur fond blanc arrondi) s'il existe,
-    /// sinon un écran blanc sur fond dégradé à la couleur du cyber. Mise en cache.
-    /// </summary>
     public static Icon IconeApp()
     {
         if (_iconeApp != null) return _iconeApp;
@@ -210,9 +192,9 @@ public class SessionWidget : Form
                         g.FillPath(fond, path);
 
                     using var stylo = new Pen(Color.White, 4f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-                    g.DrawRectangle(stylo, 14, 15, 36, 24);   // écran
-                    g.DrawLine(stylo, 32, 40, 32, 47);        // pied
-                    g.DrawLine(stylo, 22, 48, 42, 48);        // socle
+                    g.DrawRectangle(stylo, 14, 15, 36, 24);
+                    g.DrawLine(stylo, 32, 40, 32, 47);
+                    g.DrawLine(stylo, 22, 48, 42, 48);
                 }
             }
 
@@ -234,7 +216,7 @@ public class SessionWidget : Form
     public void MettreAJour(SessionInfo s)
     {
         var nouvelle = s.Id != _sessionId;
-        var premiereFois = _sessionId == -1;   // widget tout juste créé : son historique vient d'être rechargé
+        var premiereFois = _sessionId == -1;
         _sessionId = s.Id;
         _mode = s.Mode ?? "postpaye";
         _ecouleBase = Math.Max(0, s.EcouleS);
@@ -248,8 +230,6 @@ public class SessionWidget : Form
         if (nouvelle)
         {
             _modeReduit = false; _alerte5 = false; _finSignalee = false;
-            // CORRECTIF : on n'efface PAS le chat quand le widget vient d'être (re)créé
-            // (reprise après suspension) : l'historique conservé par ClientWindow vient d'y être injecté.
             if (!premiereFois) _chatBox.Clear();
             _positionne = false;
             Afficher();
@@ -277,16 +257,16 @@ public class SessionWidget : Form
 
     public void Fermer() { _fermetureAutorisee = true; Close(); }
 
-    protected override bool ShowWithoutActivation => true;   // à l'apparition, ne vole pas le focus
+    protected override bool ShowWithoutActivation => true;
 
     protected override CreateParams CreateParams
     {
         get
         {
             var cp = base.CreateParams;
-            cp.Style |= 0x00020000;       // WS_MINIMIZEBOX : le clic sur l'icône de la barre des tâches peut réduire / restaurer
-            cp.ExStyle |= 0x00040000;     // WS_EX_APPWINDOW : bouton dans la barre des tâches
-            cp.ExStyle &= ~0x80;          // retire WS_EX_TOOLWINDOW (qui cachait le widget de la barre des tâches)
+            cp.Style |= 0x00020000;
+            cp.ExStyle |= 0x00040000;
+            cp.ExStyle &= ~0x80;
             return cp;
         }
     }
@@ -296,7 +276,6 @@ public class SessionWidget : Form
     protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); using var pen = new Pen(Color.FromArgb(110, 139, 92, 246)); e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1); }
     protected override void Dispose(bool disposing) { if (disposing) { _timer.Dispose(); _tray.Visible = false; _tray.Dispose(); } base.Dispose(disposing); }
 
-    /// <summary>Position fixe : coin inférieur DROIT de la zone de travail (au-dessus de la barre des tâches).</summary>
     private void PlacerBasDroite()
     {
         if (IsDisposed || WindowState != FormWindowState.Normal) return;
@@ -317,9 +296,12 @@ public class SessionWidget : Form
         if (!Visible) Show();
     }
 
-    private void BasculerReduction(bool? forceReduit = null)
+private void BasculerReduction(bool? forceReduit = null)
     {
         _modeReduit = forceReduit ?? !_modeReduit;
+
+        // En mode réduit : on masque le nom du cyber pour laisser toute la place au montant
+        if (_lblTitre != null) _lblTitre.Visible = !_modeReduit;
 
         _lblCaption.Visible = !_modeReduit;
         _lblTemps.Visible = !_modeReduit;
@@ -329,41 +311,37 @@ public class SessionWidget : Form
         _btnEnvoyer.Visible = !_modeReduit;
 
         _lblMontant.Visible = true;
-        _voyant.Visible = true;   // le voyant reste visible, même réduit
         _btnCacher.Text = _modeReduit ? "Afficher" : "Réduire";
 
         if (_modeReduit)
         {
-            ClientSize = new Size(S(240), S(102));
-            _lblMontant.Bounds = new Rectangle(S(0), S(6), S(240), S(24));
+            // Format ultra-compact : Montant seul, parfaitement lisible sans superposition
+            ClientSize = new Size(S(240), S(82));
+            _lblMontant.Bounds = new Rectangle(S(6), S(8), S(228), S(24));
+            _lblMontant.Font = new Font("Segoe UI", 11.5f, FontStyle.Bold);
             _lblMontant.TextAlign = ContentAlignment.MiddleCenter;
-            _voyant.Bounds = new Rectangle(S(6), S(32), S(228), S(20));
 
-            _btnCacher.Bounds = new Rectangle(S(6), S(58), S(72), S(35));
-            _btnSuspendre.Bounds = new Rectangle(S(82), S(58), S(72), S(35));
-            _btnQuitter.Bounds = new Rectangle(S(158), S(58), S(72), S(35));
+            _btnCacher.Bounds = new Rectangle(S(6), S(38), S(72), S(36));
+            _btnSuspendre.Bounds = new Rectangle(S(82), S(38), S(72), S(36));
+            _btnQuitter.Bounds = new Rectangle(S(158), S(38), S(72), S(36));
         }
         else
         {
-            ClientSize = new Size(S(240), S(250));
+            // Format complet normal
+            ClientSize = new Size(S(240), S(230));
             _lblMontant.Bounds = new Rectangle(S(0), S(74), S(240), S(20));
+            _lblMontant.Font = new Font("Segoe UI", 10.5f, FontStyle.Bold);
             _lblMontant.TextAlign = ContentAlignment.MiddleCenter;
-            _voyant.Bounds = new Rectangle(S(6), S(114), S(228), S(20));
 
-            _btnCacher.Bounds = new Rectangle(S(6), S(210), S(72), S(35));
-            _btnSuspendre.Bounds = new Rectangle(S(82), S(210), S(72), S(35));
-            _btnQuitter.Bounds = new Rectangle(S(158), S(210), S(72), S(35));
+            _btnCacher.Bounds = new Rectangle(S(6), S(190), S(72), S(34));
+            _btnSuspendre.Bounds = new Rectangle(S(82), S(190), S(72), S(34));
+            _btnQuitter.Bounds = new Rectangle(S(158), S(190), S(72), S(34));
         }
 
         PlacerBasDroite();
         if (!Visible) Afficher();
     }
 
-    /// <summary>
-    /// Montant temps réel : STRICTEMENT max(minimum, minutes × prix/minute).
-    /// Le paramètre « arrondi » des tarifs n'est volontairement PAS appliqué ici
-    /// (même formule que le panneau admin et que PosteSessionService::montant() côté Laravel).
-    /// </summary>
     private int MontantPourMinutes(int minutes)
     {
         var t = _tarif;
@@ -434,11 +412,10 @@ public class SessionWidget : Form
 
     private Button Bouton(string texte, Color fond, int x, EventHandler clic)
     {
-        var b = new Button { Text = texte, FlatStyle = FlatStyle.Flat, BackColor = fond, ForeColor = Color.White, Font = new Font("Segoe UI", 8f, FontStyle.Bold), Bounds = new Rectangle(S(x), S(210), S(72), S(35)), TabStop = false, Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
+        var b = new Button { Text = texte, FlatStyle = FlatStyle.Flat, BackColor = fond, ForeColor = Color.White, Font = new Font("Segoe UI", 8f, FontStyle.Bold), Bounds = new Rectangle(S(x), S(190), S(72), S(34)), TabStop = false, Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
         b.FlatAppearance.BorderSize = 0; b.Click += clic; Controls.Add(b); return b;
     }
 
-    // Le widget est FIXE (bas-droite) : le déplacement par glisser-déposer est volontairement désactivé.
     private void Deplacable(Control c) { }
 
     [DllImport("user32.dll")] private static extern bool ReleaseCapture();

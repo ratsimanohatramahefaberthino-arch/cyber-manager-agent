@@ -17,7 +17,7 @@ public sealed class SurveillanceLiaison : IDisposable
     private EtatLiaison _etat = EtatLiaison.Ok;
     private System.Threading.Timer? _minuteur;
 
-    public TimeSpan DelaiGrace { get; set; } = TimeSpan.FromSeconds(15);
+    public TimeSpan DelaiGrace { get; set; } = TimeSpan.FromSeconds(180);
 
     public event Action<EtatLiaison, string>? EtatChange;
 
